@@ -232,6 +232,7 @@ extern NODE *ruby_top_cref;
 #define nd_tval  u2.value
 
 #define NEW_NODE(t,a0,a1,a2) rb_node_newnode((t),(VALUE)(a0),(VALUE)(a1),(VALUE)(a2))
+#define NEW_NODE_LONGLIFE(t,a0,a1,a2) rb_node_newnode_longlife((t),(VALUE)(a0),(VALUE)(a1),(VALUE)(a2))
 
 #define NEW_METHOD(n,x) NEW_NODE(NODE_METHOD,x,n,0)
 #define NEW_FBODY(n,i,o) NEW_NODE(NODE_FBODY,n,i,o)
@@ -349,6 +350,7 @@ NODE *rb_compile_file _((const char*, VALUE, int));
 
 void rb_add_method _((VALUE, ID, NODE *, int));
 NODE *rb_node_newnode _((enum node_type,VALUE,VALUE,VALUE));
+NODE *rb_node_newnode_longlife _((enum node_type,VALUE,VALUE,VALUE));
 
 NODE* rb_method_node _((VALUE klass, ID id));
 
@@ -411,12 +413,8 @@ struct rb_thread {
 
     size_t stk_len;
     size_t stk_max;
-    size_t stk_size;
     VALUE *stk_ptr;
     VALUE *stk_pos;
-    VALUE *stk_base;
-    VALUE *guard;
-    VALUE *gc_stack_end;
 #ifdef __ia64
     size_t bstr_len;
     size_t bstr_max;

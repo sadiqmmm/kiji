@@ -4603,6 +4603,25 @@ rb_node_newnode(type, a0, a1, a2)
     return n;
 }
 
+NODE*
+rb_node_newnode_longlife(type, a0, a1, a2)
+    enum node_type type;
+    VALUE a0, a1, a2;
+{
+    NODE *n = (NODE*)rb_newobj_longlife();
+
+    n->flags |= T_NODE;
+    nd_set_type(n, type);
+    nd_set_line(n, ruby_sourceline);
+    n->nd_file = ruby_sourcefile;
+
+    n->u1.value = a0;
+    n->u2.value = a1;
+    n->u3.value = a2;
+
+    return n;
+}
+
 static enum node_type
 nodetype(node)			/* for debug */
     NODE *node;

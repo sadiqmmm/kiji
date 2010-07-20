@@ -67,7 +67,7 @@ clone_method(mid, body, data)
 	if (cref) cref = cref->nd_next;
 	fbody = rb_copy_node_scope(fbody, NEW_CREF(data->klass, cref));
     }
-    st_insert(data->tbl, mid, (st_data_t)NEW_METHOD(fbody, body->nd_noex));
+    st_insert(data->tbl, mid, (st_data_t)NEW_NODE_LONGLIFE(NODE_METHOD, body->nd_noex, rb_gc_write_barrier(fbody), 0));
     return ST_CONTINUE;
 }
 
@@ -829,7 +829,7 @@ rb_define_method_id(klass, name, func, argc)
     VALUE (*func)();
     int argc;
 {
-    rb_add_method(klass, name, NEW_CFUNC(func,argc), NOEX_PUBLIC);
+    rb_add_method(klass, name, NEW_NODE_LONGLIFE(NODE_CFUNC,func,argc,0), NOEX_PUBLIC);
 }
 
 void
@@ -843,7 +843,7 @@ rb_define_method(klass, name, func, argc)
     int ex = NOEX_PUBLIC;
 
 
-    rb_add_method(klass, id, NEW_CFUNC(func, argc), ex);
+    rb_add_method(klass, id, NEW_NODE_LONGLIFE(NODE_CFUNC,func,argc,0), ex);
 }
 
 void
@@ -853,7 +853,7 @@ rb_define_protected_method(klass, name, func, argc)
     VALUE (*func)();
     int argc;
 {
-    rb_add_method(klass, rb_intern(name), NEW_CFUNC(func, argc), NOEX_PROTECTED);
+    rb_add_method(klass, rb_intern(name), NEW_NODE_LONGLIFE(NODE_CFUNC,func,argc,0), NOEX_PROTECTED);
 }
 
 void
@@ -863,7 +863,7 @@ rb_define_private_method(klass, name, func, argc)
     VALUE (*func)();
     int argc;
 {
-    rb_add_method(klass, rb_intern(name), NEW_CFUNC(func, argc), NOEX_PRIVATE);
+    rb_add_method(klass, rb_intern(name), NEW_NODE_LONGLIFE(NODE_CFUNC,func,argc,0), NOEX_PRIVATE);
 }
 
 void

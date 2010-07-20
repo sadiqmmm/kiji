@@ -305,6 +305,8 @@ char *rb_str2cstr _((VALUE,long*));
 #define CHR2FIX(x) INT2FIX((long)((x)&0xff))
 
 VALUE rb_newobj _((void));
+VALUE rb_newobj_longlife _((void));
+
 #define NEWOBJ(obj,type) type *obj = (type*)rb_newobj()
 #define OBJSETUP(obj,c,t) do {\
     RBASIC(obj)->flags = (t);\
@@ -470,11 +472,12 @@ struct RBignum {
 #define RFILE(obj)   (R_CAST(RFile)(obj))
 
 #define FL_SINGLETON FL_USER0
-#define FL_MARK      (1<<6)
-#define FL_FINALIZE  (1<<7)
-#define FL_TAINT     (1<<8)
-#define FL_EXIVAR    (1<<9)
-#define FL_FREEZE    (1<<10)
+#define FL_MARK           (1<<6)
+#define FL_FINALIZE       (1<<7)
+#define FL_TAINT          (1<<8)
+#define FL_EXIVAR         (1<<9)
+#define FL_FREEZE         (1<<10)   
+#define FL_REMEMBERED_SET (1<<11)   
 
 #define FL_USHIFT    12
 

@@ -341,6 +341,7 @@ static int dont_gc;
 static GC_TIME_TYPE gc_time = 0;
 static int gc_collections = 0;
 static int during_gc;
+static int longlife_collection;
 static int need_call_final = 0;
 static st_table *finalizer_table = 0;
 
@@ -757,7 +758,13 @@ typedef struct RVALUE {
 #endif
 
 static RVALUE *freelist = 0;
+static RVALUE *longlife_freelist = 0;
 static RVALUE *deferred_final_list = 0;
+
+enum lifetime {
+    lifetime_normal,
+    lifetime_longlife
+};
 
 static int heaps_increment = 10;
 static struct heaps_slot {
@@ -767,9 +774,11 @@ static struct heaps_slot {
     RVALUE *slotlimit;
     int *marks;
     int marks_size;
+    enum lifetime lifetime;
 } *heaps;
 static int heaps_length = 0;
 static int heaps_used   = 0;
+static int longlife_heaps_used = 0; // [ASz] objspace->heap.longlife_used
 
 static int heap_min_slots = 10000;
 static int heap_slots = 10000;
@@ -781,6 +790,14 @@ static double heap_slots_growth_factor = 1.8;
 static int verbose_gc_stats = Qfalse;
 
 static FILE* gc_data_file = NULL;
+
+typedef struct remembered_set {
+    RVALUE *obj;
+    struct remembered_set *next;
+} remembered_set_t;
+
+static int remembered_set_t *remembered_set_ptr; // [ASz] remembered_set_ptr
+static int remembered_set_t *remembered_set_freed; // [ASz] remembered_set_freed
 
 static RVALUE *himem, *lomem;
 
@@ -933,9 +950,9 @@ rb_gc_log(self, original_str)
 }
 
 
-
+// [ASz] eq. to assign_heap_slot() from 1.9.x
 static void
-add_heap()
+add_heap(RVALUE **list, enum lifetime lifetime)
 {
     RVALUE *p, *pend;
 
@@ -976,11 +993,13 @@ add_heap()
         heaps[heaps_used].slotlimit = p + heap_slots;
         heaps[heaps_used].marks_size = (int) (ceil(heap_slots / (sizeof(int) * 8.0)));
         heaps[heaps_used].marks = (int *) calloc(heaps[heaps_used].marks_size, sizeof(int));
+        heaps[heaps_used].lifetime = lifetime;
 	break;
     }
     pend = p + heap_slots;
     if (lomem == 0 || lomem > p) lomem = p;
     if (himem < pend) himem = pend;
+    if (lifetime == lifetime_longlife) longlife_heaps_used++;
     heaps_used++;
     heap_slots += heap_slots_increment;
     heap_slots_increment *= heap_slots_growth_factor;
@@ -988,11 +1007,12 @@ add_heap()
 
     while (p < pend) {
 	p->as.free.flags = 0;
-	p->as.free.next = freelist;
-	freelist = p;
+	p->as.free.next = *list;
+	*list = p;
 	p++;
     }
 }
+
 #define RANY(o) ((RVALUE*)(o))
 
 int 
@@ -1020,6 +1040,32 @@ rb_newobj()
 #endif
     live_objects++;
     allocated_objects++;
+    return obj;
+}
+
+VALUE
+rb_newobj_longlife()
+{
+    VALUE obj;
+
+    if (during_gc)
+	rb_bug("object allocation during garbage collection phase");
+
+    if (ruby_gc_stress) {
+	garbage_collect();
+    }
+    if(!longlife_freelist) {
+	add_heap(&freelist_longlife, lifetime_longtime);
+    }
+
+    obj = (VALUE)longlife_freelist;
+    longlife_freelist = longlife_freelist->as.free.next;
+    MEMZERO((void*)obj, RVALUE, 1);
+    rb_mark_table_add(obj);
+#ifdef GC_DEBUG
+    RANY(obj)->file = ruby_sourcefile;
+    RANY(obj)->line = ruby_sourceline;
+#endif
     return obj;
 }
 
@@ -1289,6 +1335,29 @@ is_pointer_to_heap(ptr)
       if (p >= heap->slot && p < heap->slot + heap->limit)
         return Qtrue;
     return Qfalse;
+}
+
+VALUE
+rb_gc_write_barrier(VALUE ptr)
+{
+    remembered_set_t *tmp;
+    RVALUE *obj = RANY(ptr);
+
+    if (!SPECIAL_CONST_P(ptr) &&
+        !(rb_mark_table_contains(obj) || RBASIC(ptr)->flags & FL_REMEMBERED_SET)) {
+        if (remembered_set_freed) {
+            tmp = remembered_set_freed;
+            remembered_set_freed = remembered_set_freed->next;
+        }
+        else {
+            tmp = ALLOC(remembered_set_t);
+        }
+        tmp->next = remembered_set_ptr;
+        tmp->obj = obj;
+        obj->as.basic.flags |= FL_REMEMBERED_SET;
+        remembered_set_ptr = tmp;
+    }
+    return ptr;
 }
 
 static void
@@ -1651,17 +1720,17 @@ gc_mark_children(ptr)
 static int obj_free _((VALUE));
 
 static inline void
-add_freelist(p)
-    RVALUE *p;
+add_freelist(RVALUE **list, RVALUE *p)
 {
     /* Do not touch the fields if they don't have to be modified.
      * This is in order to preserve copy-on-write semantics.
      */
     if (p->as.free.flags != 0)
 	p->as.free.flags = 0;
-    if (p->as.free.next != freelist)
-	p->as.free.next = freelist;
-    freelist = p;
+    if (p->as.free.next != *list) {
+	p->as.free.next = *list;
+        *list = p;
+    }
 }
 
 static void
@@ -1677,7 +1746,7 @@ finalize_list(p)
 	 */
 	if (!FL_TEST(p, FL_SINGLETON)) {
 	    rb_mark_table_remove(p);
-	    add_freelist(p);
+	    add_freelist(&freelist, p);
 	}
 	p = tmp;
     }
@@ -1725,6 +1794,9 @@ free_unused_heaps()
 	if (heaps[i].limit == 0) {
 	    free_ruby_heap(heaps[i].membase);
 	    free(heaps[i].marks);
+	    if (heaps[i].lifetime == lifetime_longlife) {
+	        longlife_heaps_used--;
+	    }
 	    heaps_used--;
 	}
 	else {
@@ -1795,6 +1867,8 @@ gc_sweep()
 	RVALUE *final = final_list;
 	int deferred;
 
+        if (heaps[i].lifetime == lifetime_longlife) continue;
+
 	heap = &heaps[i];
 	p = heap->slot; pend = p + heap->limit;
 	while (p < pend) {
@@ -1821,7 +1895,7 @@ gc_sweep()
 				free_counts[builtin_type]++;
 			    }
 			}
-			add_freelist(p);
+			add_freelist(&freelist, p);
 		    }
 		}
 		else {
@@ -1831,7 +1905,7 @@ gc_sweep()
 			    free_counts[builtin_type]++;
 			}
 		    }
-		    add_freelist(p);
+		    add_freelist(&freelist, p);
 		}
 		n++;
 	    }
@@ -1864,7 +1938,10 @@ gc_sweep()
     }
     malloc_increase = 0;
     if (freed < free_min) {
-	add_heap();
+	if(longlife_heaps_used) {
+	    longlife_collection = TRUE;
+	}
+	add_heap(&freelist, lifetime_normal);
     }
     during_gc = 0;
     
@@ -1893,19 +1970,74 @@ gc_sweep()
 	    rb_thread_pending = 1;
 	}
 	if (!freelist) {
-	    add_heap();
+	    add_heap(&freelist, lifetime_normal);
 	}
 	return;
     }
     free_unused_heaps();
 }
 
+static void
+remembered_set_recycle()
+{
+    remembered_set_t *top = 0, *rem, *next;
+
+    rem = remembered_set_ptr;
+    while (rem) {
+        next = rem->next;
+        if (rb_mark_table_contains((RVALUE *)rem->obj)) {
+            top = rem;
+        }
+        else {
+            if (top) {
+                top->next = next;
+            }
+            else {
+                remembered_set_ptr = next;
+            }
+            rem->obj = 0;
+            rem->next = remembered_set_freed;
+            remembered_set_freed = rem;
+        }
+        rem = next;
+    }
+}
+
+static void
+gc_sweep_for_longlife()
+{
+    RVALUE *p, *pend;
+    size_t i, freed = 0;
+
+    longlife_freelist = 0;
+    for (i = 0; i < heaps_used; i++) {
+
+        if (heaps[i].lifetime == lifetime_normal) continue;
+	p = heaps[i].slot; pend = p + heaps[i].limit;
+	struct heaps_slot* hs = heaps+i;
+	while (p < pend) {
+	    if (!(rb_mark_table_heap_contains(hs, p)) {
+                if (p->as.basic.flags) {
+                    obj_free(objspace, (VALUE)p);
+                }
+                add_freelist(longlife_freelist, p);
+                freed++;
+	    }
+	    p++;
+	}
+    }
+
+    remembered_set_recycle();
+    longlife_collection = FALSE;
+}
+
 void
 rb_gc_force_recycle(p)
     VALUE p;
 {
-    rb_mark_table_remove((RVALUE *) p);
-    add_freelist(RANY(p));
+    if (!(rb_mark_table_contains((RVALUE *) p) || RBASIC(p)->flags & FL_REMEMBERED_SET)) {
+        add_freelist(&freelist, RANY(p));
+    }
 }
 
 static inline void
@@ -2104,7 +2236,7 @@ garbage_collect_0(VALUE *top_frame)
 #endif
     if (dont_gc || during_gc) {
 	if (!freelist) {
-	    add_heap();
+	    add_heap(&freelist, lifetime_normal);
 	}
 	return;
     }
@@ -2123,6 +2255,12 @@ garbage_collect_0(VALUE *top_frame)
     rb_mark_table_prepare();
     init_mark_stack();
 
+    if (longlife_collection) {
+        clear_mark_longlife_heaps();
+    }
+    else {
+        rb_gc_mark_remembered_set();
+    }
     /* mark frame stack */
     if (rb_curr_thread == rb_main_thread)
 	frame = ruby_frame;
@@ -2211,6 +2349,9 @@ garbage_collect_0(VALUE *top_frame)
 	}
 	rb_gc_abort_threads();
     } while (!MARK_STACK_EMPTY);
+    if(longlife_collection) {
+        gc_sweep_for_longlife();    
+    }
     gc_sweep();
     rb_mark_table_finalize();
     gc_cycles++;
@@ -2224,6 +2365,36 @@ garbage_collect_0(VALUE *top_frame)
 	if (verbose_gc_stats) {
 	    fprintf(gc_data_file, "GC time: %d msec\n", musecs_used / 1000);
 	}
+    }
+}
+
+static void
+rb_gc_mark_remembered_set()
+{
+    remembered_set_t *rem;
+
+    rem = remembered_set_ptr;
+    while (rem) {
+        rb_gc_mark((VALUE)rem->obj);
+        rem = rem->next;
+    }
+}
+
+static void
+clear_mark_longlife_heaps()
+{
+    int i;
+
+    for (i = 0; i < heaps_used; i++) {
+        RVALUE *p, *pend;
+
+        if (heaps[i].lifetime == lifetime_longlife) {
+            p = heaps[i].slot; pend = p + heaps[i].limit;
+            struct heaps_slot* heap = heaps+i;
+            for (;p < pend; p++) {
+		rb_mark_table_heap_remove(heap, p);
+            }
+        }
     }
 }
 
@@ -2278,6 +2449,9 @@ rb_gc()
 VALUE
 rb_gc_start()
 {
+    if (longlife_used) {
+        longlife_collection = TRUE;
+    }
     rb_gc();
     return Qnil;
 }
@@ -2461,7 +2635,7 @@ Init_heap()
 	Init_stack(0);
     }
     set_gc_parameters();
-    add_heap();
+    add_heap(&freelist, lifetime_normal);
 }
 
 static VALUE
