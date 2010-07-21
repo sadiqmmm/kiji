@@ -2247,7 +2247,7 @@ rb_alias(klass, name, def)
     st_insert(RCLASS(klass)->m_tbl, name,
 	      (st_data_t)NEW_NODE_LONGLIFE(NODE_METHOD, 
 	          NOEX_WITH_SAFE(orig->nd_noex), 
-		  NEW_NODE_LONGLIFE(NODE_FBODY, rb_gc_write_barrier((VALUE)body), def, origin), 0);
+		  NEW_NODE_LONGLIFE(NODE_FBODY, rb_gc_write_barrier((VALUE)body), def, origin), 0));
 
     if (!ruby_running) return;
 

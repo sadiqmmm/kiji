@@ -67,7 +67,7 @@ clone_method(mid, body, data)
 	if (cref) cref = cref->nd_next;
 	fbody = rb_copy_node_scope(fbody, NEW_CREF(data->klass, cref));
     }
-    st_insert(data->tbl, mid, (st_data_t)NEW_NODE_LONGLIFE(NODE_METHOD, body->nd_noex, rb_gc_write_barrier(fbody), 0));
+    st_insert(data->tbl, mid, (st_data_t)NEW_NODE_LONGLIFE(NODE_METHOD, body->nd_noex, rb_gc_write_barrier((VALUE)fbody), 0));
     return ST_CONTINUE;
 }
 

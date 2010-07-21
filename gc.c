@@ -796,8 +796,8 @@ typedef struct remembered_set {
     struct remembered_set *next;
 } remembered_set_t;
 
-static int remembered_set_t *remembered_set_ptr; // [ASz] remembered_set_ptr
-static int remembered_set_t *remembered_set_freed; // [ASz] remembered_set_freed
+static remembered_set_t *remembered_set_ptr; // [ASz] remembered_set_ptr
+static remembered_set_t *remembered_set_freed; // [ASz] remembered_set_freed
 
 static RVALUE *himem, *lomem;
 
@@ -1051,17 +1051,14 @@ rb_newobj_longlife()
     if (during_gc)
 	rb_bug("object allocation during garbage collection phase");
 
-    if (ruby_gc_stress) {
-	garbage_collect();
-    }
     if(!longlife_freelist) {
-	add_heap(&freelist_longlife, lifetime_longtime);
+	add_heap(&longlife_freelist, lifetime_longlife);
     }
 
     obj = (VALUE)longlife_freelist;
     longlife_freelist = longlife_freelist->as.free.next;
     MEMZERO((void*)obj, RVALUE, 1);
-    rb_mark_table_add(obj);
+    rb_mark_table_add((RVALUE*)obj);
 #ifdef GC_DEBUG
     RANY(obj)->file = ruby_sourcefile;
     RANY(obj)->line = ruby_sourceline;
@@ -1939,7 +1936,7 @@ gc_sweep()
     malloc_increase = 0;
     if (freed < free_min) {
 	if(longlife_heaps_used) {
-	    longlife_collection = TRUE;
+	    longlife_collection = Qtrue;
 	}
 	add_heap(&freelist, lifetime_normal);
     }
@@ -2016,11 +2013,11 @@ gc_sweep_for_longlife()
 	p = heaps[i].slot; pend = p + heaps[i].limit;
 	struct heaps_slot* hs = heaps+i;
 	while (p < pend) {
-	    if (!(rb_mark_table_heap_contains(hs, p)) {
+	    if (!rb_mark_table_heap_contains(hs, p)) {
                 if (p->as.basic.flags) {
-                    obj_free(objspace, (VALUE)p);
+                    obj_free((VALUE)p);
                 }
-                add_freelist(longlife_freelist, p);
+                add_freelist(&longlife_freelist, p);
                 freed++;
 	    }
 	    p++;
@@ -2028,7 +2025,7 @@ gc_sweep_for_longlife()
     }
 
     remembered_set_recycle();
-    longlife_collection = FALSE;
+    longlife_collection = Qfalse;
 }
 
 void
@@ -2222,6 +2219,36 @@ int rb_setjmp (rb_jmp_buf);
 #endif /* __GNUC__ */
 
 static void
+rb_gc_mark_remembered_set()
+{
+    remembered_set_t *rem;
+
+    rem = remembered_set_ptr;
+    while (rem) {
+        rb_gc_mark((VALUE)rem->obj);
+        rem = rem->next;
+    }
+}
+
+static void
+clear_mark_longlife_heaps()
+{
+    int i;
+
+    for (i = 0; i < heaps_used; i++) {
+        RVALUE *p, *pend;
+
+        if (heaps[i].lifetime == lifetime_longlife) {
+            p = heaps[i].slot; pend = p + heaps[i].limit;
+            struct heaps_slot* heap = heaps+i;
+            for (;p < pend; p++) {
+		rb_mark_table_heap_remove(heap, p);
+            }
+        }
+    }
+}
+
+static void
 garbage_collect_0(VALUE *top_frame)
 {
     struct gc_list *list;
@@ -2369,36 +2396,6 @@ garbage_collect_0(VALUE *top_frame)
 }
 
 static void
-rb_gc_mark_remembered_set()
-{
-    remembered_set_t *rem;
-
-    rem = remembered_set_ptr;
-    while (rem) {
-        rb_gc_mark((VALUE)rem->obj);
-        rem = rem->next;
-    }
-}
-
-static void
-clear_mark_longlife_heaps()
-{
-    int i;
-
-    for (i = 0; i < heaps_used; i++) {
-        RVALUE *p, *pend;
-
-        if (heaps[i].lifetime == lifetime_longlife) {
-            p = heaps[i].slot; pend = p + heaps[i].limit;
-            struct heaps_slot* heap = heaps+i;
-            for (;p < pend; p++) {
-		rb_mark_table_heap_remove(heap, p);
-            }
-        }
-    }
-}
-
-static void
 garbage_collect()
 {
   jmp_buf save_regs_gc_mark;
@@ -2449,8 +2446,8 @@ rb_gc()
 VALUE
 rb_gc_start()
 {
-    if (longlife_used) {
-        longlife_collection = TRUE;
+    if (longlife_heaps_used) {
+        longlife_collection = Qtrue;
     }
     rb_gc();
     return Qnil;
