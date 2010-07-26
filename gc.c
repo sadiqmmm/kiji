@@ -1850,11 +1850,6 @@ gc_sweep()
 	}
     }
 
-    mark_source_filename(ruby_sourcefile);
-    if (source_filenames) {
-        st_foreach(source_filenames, sweep_source_filename, 0);
-    }
-
     freelist = 0;
     final_list = deferred_final_list;
     deferred_final_list = 0;
@@ -2022,6 +2017,11 @@ gc_sweep_for_longlife()
 	    }
 	    p++;
 	}
+    }
+
+    mark_source_filename(ruby_sourcefile);
+    if (source_filenames) {
+        st_foreach(source_filenames, sweep_source_filename, 0);
     }
 
     remembered_set_recycle();
