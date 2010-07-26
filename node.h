@@ -235,10 +235,13 @@ extern NODE *ruby_top_cref;
 #define NEW_NODE_LONGLIFE(t,a0,a1,a2) rb_node_newnode_longlife((t),(VALUE)(a0),(VALUE)(a1),(VALUE)(a2))
 
 #define NEW_METHOD(n,x) NEW_NODE(NODE_METHOD,x,n,0)
+#define NEW_METHOD_LONGLIFE(n,x) NEW_NODE_LONGLIFE(NODE_METHOD,x,rb_gc_write_barrier((VALUE)(n)),0)
 #define NEW_FBODY(n,i,o) NEW_NODE(NODE_FBODY,n,i,o)
+#define NEW_FBODY_LONGLIFE(n,i,o) NEW_NODE_LONGLIFE(NODE_FBODY,n,i,o)
 #define NEW_DEFN(i,a,d,p) NEW_NODE(NODE_DEFN,p,i,NEW_RFUNC(a,d))
 #define NEW_DEFS(r,i,a,d) NEW_NODE(NODE_DEFS,r,i,NEW_RFUNC(a,d))
 #define NEW_CFUNC(f,c) NEW_NODE(NODE_CFUNC,f,c,0)
+#define NEW_CFUNC_LONGLIFE(f,c) NEW_NODE_LONGLIFE(NODE_CFUNC,f,c,0)
 #define NEW_IFUNC(f,c) NEW_NODE(NODE_IFUNC,f,c,0)
 #define NEW_RFUNC(b1,b2) NEW_SCOPE(block_append(b1,b2))
 #define NEW_SCOPE(b) NEW_NODE(NODE_SCOPE,local_tbl(),0,(b))
