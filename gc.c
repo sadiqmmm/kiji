@@ -761,10 +761,13 @@ static RVALUE *freelist = 0;
 static RVALUE *longlife_freelist = 0;
 static RVALUE *deferred_final_list = 0;
 
-enum lifetime {
+typedef enum lifetime {
     lifetime_normal,
     lifetime_longlife
-};
+} lifetime_t;
+
+#define LIFETIME_NAME_BUFSZ 16
+static const char lifetime_name[][LIFETIME_NAME_BUFSZ] = { "Normal heap", "Longlife heap" };
 
 static int heaps_increment = 10;
 static struct heaps_slot {
@@ -805,7 +808,8 @@ static RVALUE *himem, *lomem;
 #include "marktable.c"
 #include "fastmarktable.c"
 
-static int gc_cycles = 0;
+static int gc_cycles;
+static int gc_longlife_cycles;
 
 static void set_gc_parameters()
 {
@@ -2376,12 +2380,17 @@ garbage_collect_0(VALUE *top_frame)
 	}
 	rb_gc_abort_threads();
     } while (!MARK_STACK_EMPTY);
-    if(longlife_collection) {
+    if (longlife_collection) {
         gc_sweep_for_longlife();    
     }
     gc_sweep();
     rb_mark_table_finalize();
-    gc_cycles++;
+
+    if (longlife_collection) {
+      gc_longlife_cycles++;
+    } else {
+      gc_cycles++;
+    }
 
     if (gc_statistics) {
 	GC_TIME_TYPE musecs_used;
@@ -3081,9 +3090,9 @@ rb_obj_id(VALUE obj)
 }
 
 static VALUE
-os_statistics()
+os_statistics_work(lifetime_t lt)
 {
-    int i;
+    int i, heap_count = 0;
     int n = 0;
     unsigned int objects = 0;
     unsigned int total_objects_size = 0;
@@ -3105,6 +3114,9 @@ os_statistics()
 	unsigned int free_slots_in_current_group = 0;
 	enum { BEGIN, MIDDLE, END } mode = BEGIN;
 
+        if (heaps[i].lifetime != lt) continue;
+
+        heap_count++;
 	p = heaps[i].slot;
 	pend = p + heaps[i].limit;
 	for (;p < pend; p++, slot_index++) {
@@ -3180,6 +3192,7 @@ os_statistics()
     total_objects_size = objects * sizeof(RVALUE);
     total_heap_slots = total_heap_size / sizeof(RVALUE);
     snprintf(message, sizeof(message),
+        "** %s **\n"
         "Number of objects    : %d (%d AST nodes, %.2f%%)\n"
         "Heap slot size       : %d\n"
         "GC cycles so far     : %d\n"
@@ -3190,10 +3203,11 @@ os_statistics()
         "Trailing free slots  : %d (%.2f KB = %.2f%%)\n"
         "Number of contiguous groups of %d slots: %d (%.2f%%)\n"
         "Number of terminal objects: %d (%.2f%%)\n",
+        lifetime_name[lt],
         objects, ast_nodes, ast_nodes * 100 / (double) objects,
         sizeof(RVALUE),
-        gc_cycles,
-        heaps_used,
+        (lt == lifetime_normal) ? gc_cycles : gc_longlife_cycles,
+        heap_count,
         total_objects_size / 1024.0,
         total_heap_size / 1024.0,
         (total_heap_size - total_objects_size) / 1024.0,
@@ -3211,6 +3225,18 @@ os_statistics()
         terminal_objects * 100.0 / total_heap_slots
     );
     return rb_str_new2(message);
+}
+
+static VALUE
+os_statistics()
+{
+    os_statistics_work(lifetime_normal);
+}
+
+static VALUE
+os_longlife_statistics()
+{
+    os_statistics_work(lifetime_longlife);
 }
 
 /*
@@ -3346,6 +3372,7 @@ Init_GC()
     rb_define_module_function(rb_mObSpace, "_id2ref", id2ref, 1);
 
     rb_define_module_function(rb_mObSpace, "statistics", os_statistics, 0);
+    rb_define_module_function(rb_mObSpace, "longlife_statistics", os_longlife_statistics, 0);
 
     rb_gc_register_address(&rb_mObSpace);
     rb_global_variable(&finalizers);
