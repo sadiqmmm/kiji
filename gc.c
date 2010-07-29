@@ -3099,6 +3099,7 @@ os_statistics_work(lifetime_t lt)
     unsigned int total_heap_size = 0;
     unsigned int total_heap_slots = 0;
     unsigned int ast_nodes = 0;
+    unsigned int ast_calls = 0, ast_varmap = 0, ast_scope = 0, ast_node = 0, ast_singleton = 0;
     char message[1024];
     unsigned int total_leading_free_slots = 0;
     unsigned int total_trailing_free_slots = 0;
@@ -3158,13 +3159,18 @@ os_statistics_work(lifetime_t lt)
 		int isAST = 0;
 		switch (TYPE(p)) {
 		  case T_ICLASS:
+                    ast_calls++;
 		  case T_VARMAP:
+                    ast_varmap++;
 		  case T_SCOPE:
+                    ast_scope++;
 		  case T_NODE:
+                    ast_node++;
 		    isAST = 1;
 		    break;
 		  case T_CLASS:
 		    if (FL_TEST(p, FL_SINGLETON)) {
+                        ast_singleton++;
 		        isAST = 1;
 		        break;
 		    }
@@ -3194,6 +3200,7 @@ os_statistics_work(lifetime_t lt)
     snprintf(message, sizeof(message),
         "** %s **\n"
         "Number of objects    : %d (%d AST nodes, %.2f%%)\n"
+        "AST types            : call %d, varmap %d, scope %d, node %d, singleton %d\n"
         "Heap slot size       : %d\n"
         "GC cycles so far     : %d\n"
         "Number of heaps      : %d\n"
@@ -3205,6 +3212,7 @@ os_statistics_work(lifetime_t lt)
         "Number of terminal objects: %d (%.2f%%)\n",
         lifetime_name[lt],
         objects, ast_nodes, ast_nodes * 100 / (double) objects,
+        ast_calls, ast_varmap, ast_scope, ast_node, ast_singleton,
         sizeof(RVALUE),
         (lt == lifetime_normal) ? gc_cycles : gc_longlife_cycles,
         heap_count,

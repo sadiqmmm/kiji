@@ -28,3 +28,4 @@ RUBY_EXTERN const char *ruby_copyright;
 
 #define RUBY_RELEASE_STR "patchlevel"
 #define RUBY_RELEASE_NUM RUBY_PATCHLEVEL
+
