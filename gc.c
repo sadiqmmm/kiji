@@ -1344,7 +1344,7 @@ rb_gc_write_barrier(VALUE ptr)
     remembered_set_t *tmp;
     RVALUE *obj = RANY(ptr);
 
-    if (!SPECIAL_CONST_P(ptr) &&
+    if (ptr && !SPECIAL_CONST_P(ptr) &&
         !(rb_mark_table_contains(obj) || RBASIC(ptr)->flags & FL_REMEMBERED_SET)) {
         if (remembered_set_freed) {
             tmp = remembered_set_freed;

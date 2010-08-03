@@ -470,7 +470,7 @@ rb_add_method(klass, mid, node, noex)
     }
     if (OBJ_FROZEN(klass)) rb_error_frozen("class/module");
     rb_clear_cache_by_id(mid);
-    body = NEW_METHOD_LONGLIFE(node, NOEX_WITH_SAFE(noex));
+    body = NEW_METHOD(node, NOEX_WITH_SAFE(noex));
     st_insert(RCLASS(klass)->m_tbl, mid, (st_data_t)body);
     if (node && mid != ID_ALLOCATOR && ruby_running) {
 	if (FL_TEST(klass, FL_SINGLETON)) {
@@ -488,7 +488,7 @@ rb_define_alloc_func(klass, func)
     VALUE (*func) _((VALUE));
 {
     Check_Type(klass, T_CLASS);
-    rb_add_method(rb_singleton_class(klass), ID_ALLOCATOR, NEW_CFUNC_LONGLIFE(func, 0),
+    rb_add_method(rb_singleton_class(klass), ID_ALLOCATOR, NEW_CFUNC(func, 0),
 		  NOEX_PRIVATE);
 }
 
@@ -2245,7 +2245,7 @@ rb_alias(klass, name, def)
 	}
     }
     st_insert(RCLASS(klass)->m_tbl, name,
-        (st_data_t)NEW_METHOD_LONGLIFE(NEW_FBODY_LONGLIFE(body, def, origin),
+        (st_data_t)NEW_METHOD(NEW_FBODY(body, def, origin),
             NOEX_WITH_SAFE(orig->nd_noex)));
 
     if (!ruby_running) return;
