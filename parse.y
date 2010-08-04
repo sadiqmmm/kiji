@@ -5574,7 +5574,7 @@ cond_negative(nodep)
     if (!c) return 0;
     switch (nd_type(c)) {
       case NODE_NOT:
-	*nodep = c->nd_body;
+	*nodep = rb_gc_write_barrier(c->nd_body);
 	return 1;
       case NODE_NEWLINE:
 	if (c->nd_next && nd_type(c->nd_next) == NODE_NOT) {
