@@ -2234,7 +2234,7 @@ dsym		: tSYMBEG xstring_contents tSTRING_END
 				}
 				/* fall through */
 			      default:
-				$$ = NEW_NODE(NODE_DSYM, rb_str_new(0, 0), 1, NEW_LIST($$));
+				$$ = NEW_DSYM(rb_str_new(0, 0), NEW_LIST($$));
 				break;
 			    }
 			}
