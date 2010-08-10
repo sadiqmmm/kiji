@@ -85,11 +85,25 @@ static VALUE *gc_stack_limit;
 static size_t malloc_increase = 0;
 static size_t malloc_limit = GC_MALLOC_LIMIT;
 static size_t unstressed_malloc_limit = GC_MALLOC_LIMIT;
-
+                 
 static void run_final();
 static VALUE nomem_error;
 static void garbage_collect();
 
+static int force_longlife_allocation = 0;
+
+void rb_gc_enter_longlife_allocation() {
+    ++force_longlife_allocation;
+}
+
+void rb_gc_exit_longlife_allocation() {
+    if(force_longlife_allocation > 0) {
+	--force_longlife_allocation;    
+    }
+    else {
+	rb_bug("Unbalanced rb_gc_exit_longlife_allocation call");    
+    }
+}
 
 /*
  *  call-seq:
@@ -1028,6 +1042,9 @@ rb_during_gc()
 VALUE
 rb_newobj()
 {
+    if(force_longlife_allocation) {
+	return rb_newobj_longlife();    
+    }
     VALUE obj;
 
     if (during_gc)
@@ -1050,6 +1067,9 @@ rb_newobj()
 VALUE
 rb_newobj_longlife()
 {
+    if(!force_longlife_allocation) {
+	return rb_newobj();    
+    }
     VALUE obj;
 
     if (during_gc)

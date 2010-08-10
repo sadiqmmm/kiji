@@ -7128,7 +7128,7 @@ void
 rb_load(fname, wrap)
     VALUE fname;
     int wrap;
-{
+{      
     VALUE tmp;
     int state;
     volatile int prohibit_int = rb_prohibit_interrupt;
@@ -7138,6 +7138,7 @@ rb_load(fname, wrap)
     NODE *volatile last_node;
     NODE *volatile saved_cref = ruby_cref;
 
+    rb_gc_enter_longlife_allocation();
     if (wrap && ruby_safe_level >= 4) {
 	StringValue(fname);
     }
@@ -7147,6 +7148,7 @@ rb_load(fname, wrap)
     fname = rb_str_new4(fname);
     tmp = rb_find_file(fname);
     if (!tmp) {
+	rb_gc_exit_longlife_allocation();
 	load_failed(fname);
     }
     fname = tmp;
@@ -7200,6 +7202,7 @@ rb_load(fname, wrap)
 	    eval_tree(self, node);
 	}
     }
+    rb_gc_exit_longlife_allocation();
     ruby_frame->last_func = last_func;
     ruby_current_node = last_node;
     ruby_sourcefile = 0;

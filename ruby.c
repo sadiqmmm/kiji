@@ -873,7 +873,8 @@ load_file(fname, script)
     VALUE f;
     int line_start = 1;
 
-    if (!fname) rb_load_fail(fname);
+    if (!fname) rb_load_fail(fname);   
+    rb_gc_enter_longlife_allocation();
     if (strcmp(fname, "-") == 0) {
 	f = rb_stdin;
     }
@@ -881,6 +882,7 @@ load_file(fname, script)
 	FILE *fp = fopen(fname, "r");
 
 	if (fp == NULL) {
+	    rb_gc_exit_longlife_allocation();
 	    rb_load_fail(fname);
 	}
 	fclose(fp);
@@ -913,6 +915,7 @@ load_file(fname, script)
 		    }
 		}
 	    }
+	    rb_gc_exit_longlife_allocation();
 	    rb_raise(rb_eLoadError, "no Ruby script found in input");
 	}
 
@@ -952,6 +955,7 @@ load_file(fname, script)
 
 		    ruby_sourcefile = rb_source_filename(fname);
 		    ruby_sourceline = 1;
+		    rb_gc_exit_longlife_allocation();
 		    rb_fatal("Can't exec %s", path);
 		}
 
@@ -972,9 +976,13 @@ load_file(fname, script)
 	    rb_io_ungetc(f, c);
 	}
 	require_libraries();	/* Why here? unnatural */
-	if (NIL_P(c)) return;
+	if (NIL_P(c)) {
+	    rb_gc_exit_longlife_allocation();
+	    return;
+	}
     }
     rb_compile_file(fname, f, line_start);
+    rb_gc_exit_longlife_allocation();
     if (script && ruby__end__seen) {
 	rb_define_global_const("DATA", f);
     }
