@@ -2042,6 +2042,7 @@ xstring		: tXSTRING_BEG xstring_contents tSTRING_END
 			    switch (nd_type(node)) {
 			      case NODE_STR:
 				nd_set_type(node, NODE_XSTR);
+				REMEMBER(node);
 				break;
 			      case NODE_DSTR:
 				nd_set_type(node, NODE_DXSTR);
@@ -4828,6 +4829,7 @@ literal_concat(head, tail)
 	else {
 	    nd_set_type(tail, NODE_ARRAY);
 	    tail->nd_head = NEW_STR(tail->nd_lit);
+	    REMEMBER(tail->nd_head);
 	    list_concat(head, tail);
 	}
 	break;
@@ -4835,6 +4837,7 @@ literal_concat(head, tail)
       case NODE_EVSTR:
 	if (htype == NODE_STR) {
 	    nd_set_type(head, NODE_DSTR);
+	    REMEMBER(head);
 	    head->nd_alen = 1;
 	}
 	list_append(head, tail);
@@ -5574,7 +5577,7 @@ cond_negative(nodep)
     if (!c) return 0;
     switch (nd_type(c)) {
       case NODE_NOT:
-	*nodep = rb_gc_write_barrier(c->nd_body);
+	*nodep = REMEMBER(c->nd_body);
 	return 1;
       case NODE_NEWLINE:
 	if (c->nd_next && nd_type(c->nd_next) == NODE_NOT) {
