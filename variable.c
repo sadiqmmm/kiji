@@ -956,6 +956,18 @@ rb_mark_generic_ivar(obj)
     }
 }
 
+void
+add_generic_ivar_to_remembered_set(obj)
+    VALUE obj;
+{
+    st_data_t tbl;
+
+    if (!generic_iv_tbl) return;
+    if (st_lookup(generic_iv_tbl, obj, &tbl)) {
+	add_table_to_remembered_set((st_table *)tbl);
+    }
+}
+
 static int
 givar_mark_i(key, value)
     ID key;

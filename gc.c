@@ -90,20 +90,7 @@ static void run_final();
 static VALUE nomem_error;
 static void garbage_collect();
 
-static int force_longlife_allocation = 0;
-
-void rb_gc_enter_longlife_allocation() {
-    ++force_longlife_allocation;
-}
-
-void rb_gc_exit_longlife_allocation() {
-    if(force_longlife_allocation > 0) {
-	--force_longlife_allocation;    
-    }
-    else {
-	rb_bug("Unbalanced rb_gc_exit_longlife_allocation call");    
-    }
-}
+static int longlife_allocation_since_last_gc = 0;
 
 /*
  *  call-seq:
@@ -1042,9 +1029,6 @@ rb_during_gc()
 VALUE
 rb_newobj()
 {
-    if(force_longlife_allocation) {
-	return rb_newobj_longlife();    
-    }
     VALUE obj;
 
     if (during_gc)
@@ -1067,9 +1051,6 @@ rb_newobj()
 VALUE
 rb_newobj_longlife()
 {
-    if(!force_longlife_allocation) {
-	return rb_newobj();    
-    }
     VALUE obj;
 
     if (during_gc)
@@ -1082,11 +1063,14 @@ rb_newobj_longlife()
     obj = (VALUE)longlife_freelist;
     longlife_freelist = longlife_freelist->as.free.next;
     MEMZERO((void*)obj, RVALUE, 1);
-    rb_mark_table_add((RVALUE*)obj);
+    RBASIC(obj)->flags |= FL_LONGLIFE;
 #ifdef GC_DEBUG
     RANY(obj)->file = ruby_sourcefile;
     RANY(obj)->line = ruby_sourceline;
 #endif
+    if(!longlife_allocation_since_last_gc) {
+	longlife_allocation_since_last_gc = 1;
+    }
     return obj;
 }
 
@@ -1358,14 +1342,30 @@ is_pointer_to_heap(ptr)
     return Qfalse;
 }
 
-VALUE
+static inline int
+is_pointer_to_longlife_heap(ptr)
+    void *ptr;
+{
+    RVALUE *p = RANY(ptr);
+    struct heaps_slot *heap;
+
+    if (p < lomem || p > himem || (VALUE)p % sizeof(RVALUE)) return Qfalse;
+
+    /* check if p looks like a pointer */
+    heap = heaps+heaps_used;
+    while (--heap >= heaps) 
+      if (p >= heap->slot && p < heap->slot + heap->limit && heap->lifetime == lifetime_longlife)
+        return Qtrue;
+    return Qfalse;
+}
+
+static VALUE
 rb_gc_write_barrier(VALUE ptr)
 {
-    remembered_set_t *tmp;
     RVALUE *obj = RANY(ptr);
 
-    if (ptr && !SPECIAL_CONST_P(ptr) &&
-        !(rb_mark_table_contains(obj) || RBASIC(ptr)->flags & FL_REMEMBERED_SET)) {
+    if (ptr && !SPECIAL_CONST_P(ptr) && !(RBASIC(ptr)->flags & (FL_REMEMBERED_SET|FL_LONGLIFE))) {
+	remembered_set_t *tmp;
         if (remembered_set_freed) {
             tmp = remembered_set_freed;
             remembered_set_freed = remembered_set_freed->next;
@@ -1477,7 +1477,7 @@ rb_gc_mark(ptr)
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (rb_mark_table_contains(obj)) return;  /* already marked */
     rb_mark_table_add(obj);
-
+                        	
     if (__stack_past(gc_stack_limit, STACK_END))
       push_mark_stack(ptr);
     else{
@@ -1497,6 +1497,7 @@ gc_mark_children(ptr)
     obj = RANY(ptr);
     if (rb_special_const_p(ptr)) return; /* special const not marked */
     if (obj->as.basic.flags == 0) return;       /* free cell */
+    if (!longlife_collection && (obj->as.basic.flags & FL_LONGLIFE)) return; /* ref from normal to longlife */
     if (rb_mark_table_contains(obj)) return;  /* already marked */
     rb_mark_table_add(obj);
 
@@ -1742,7 +1743,7 @@ static int obj_free _((VALUE));
 
 static inline void
 add_freelist(RVALUE **list, RVALUE *p)
-{
+{           
     /* Do not touch the fields if they don't have to be modified.
      * This is in order to preserve copy-on-write semantics.
      */
@@ -1753,6 +1754,23 @@ add_freelist(RVALUE **list, RVALUE *p)
         *list = p;
     }
 }
+            
+static void add_to_correct_freelist(RVALUE *p)
+{   
+    int has_longlife_flag = FL_TEST(p, FL_LONGLIFE);
+    // Has explicit longlife flag
+    if(has_longlife_flag) {
+        add_freelist(&longlife_freelist, p);
+    }
+    // Has some flags (so they weren't cleared), but not longlife
+    else if(p->as.free.flags != 0 && !has_longlife_flag) {
+	add_freelist(&freelist, p);
+    }    
+    // If all else fails, use slower is_pointer_to_longlife_heap()
+    else {
+        add_freelist(is_pointer_to_longlife_heap(p) ? &longlife_freelist : &freelist, p);    	
+    }
+}       
 
 static void
 finalize_list(p)
@@ -1767,7 +1785,7 @@ finalize_list(p)
 	 */
 	if (!FL_TEST(p, FL_SINGLETON)) {
 	    rb_mark_table_remove(p);
-	    add_freelist(&freelist, p);
+	    add_to_correct_freelist(p);
 	}
 	p = tmp;
     }
@@ -1843,7 +1861,7 @@ gc_sweep()
     unsigned long really_freed = 0;
     int free_counts[256];
     int live_counts[256];
-    int do_gc_stats = gc_statistics & verbose_gc_stats;
+    int do_gc_stats = gc_statistics && verbose_gc_stats;
 
     live_objects = 0;
 
@@ -1998,11 +2016,15 @@ remembered_set_recycle()
 {
     remembered_set_t *top = 0, *rem, *next;
 
+    int do_gc_stats = gc_statistics && verbose_gc_stats;
+    int recycled = 0;
+    int kept = 0;
     rem = remembered_set_ptr;
     while (rem) {
         next = rem->next;
         if (rb_mark_table_contains((RVALUE *)rem->obj)) {
             top = rem;
+            ++kept;
         }
         else {
             if (top) {
@@ -2014,8 +2036,13 @@ remembered_set_recycle()
             rem->obj = 0;
             rem->next = remembered_set_freed;
             remembered_set_freed = rem;
+            ++recycled;
         }
         rem = next;
+    }
+    if(do_gc_stats) {
+	fprintf(gc_data_file, "kept in remembered set     : %.7d\n", kept);
+	fprintf(gc_data_file, "removed from remembered set: %.7d\n", recycled);
     }
 }
 
@@ -2023,7 +2050,7 @@ static void
 gc_sweep_for_longlife()
 {
     RVALUE *p, *pend;
-    size_t i, freed = 0;
+    size_t i, freed = 0, really_freed;
 
     longlife_freelist = 0;
     for (i = 0; i < heaps_used; i++) {
@@ -2035,12 +2062,30 @@ gc_sweep_for_longlife()
 	    if (!rb_mark_table_heap_contains(hs, p)) {
                 if (p->as.basic.flags) {
                     obj_free((VALUE)p);
+		    really_freed++;
                 }
                 add_freelist(&longlife_freelist, p);
                 freed++;
 	    }
 	    p++;
 	}
+    }
+    if (verbose_gc_stats) {
+	/*
+	fprintf(gc_data_file, "objects processed: %.7d\n", live_objects+freed);
+	fprintf(gc_data_file, "live objects	: %.7d\n", live_objects);
+	*/
+	fprintf(gc_data_file, "longlife freelist objects : %.7d\n", freed - really_freed);
+	fprintf(gc_data_file, "longlife freed objects    : %.7d\n", really_freed);
+/*
+	for(i = 0; i < 256; i++) {
+	    if (free_counts[i] > 0) {
+		fprintf(gc_data_file,
+			"kept %.7d / freed %.7d objects of type %s\n",
+			live_counts[i], free_counts[i], obj_type(i));
+	    }
+	}
+*/
     }
 
     mark_source_filename(ruby_sourcefile);
@@ -2056,9 +2101,8 @@ void
 rb_gc_force_recycle(p)
     VALUE p;
 {
-    if (!(rb_mark_table_contains((RVALUE *) p) || RBASIC(p)->flags & FL_REMEMBERED_SET)) {
-        add_freelist(&freelist, RANY(p));
-    }
+    rb_mark_table_remove((RVALUE *) p);
+    add_to_correct_freelist(RANY(p));
 }
 
 static inline void
@@ -2242,17 +2286,329 @@ int rb_setjmp (rb_jmp_buf);
 #endif /* __human68k__ or DJGPP */
 #endif /* __GNUC__ */
 
+static int
+add_entry_to_remembered_set(key, value)
+    ID key;
+    VALUE value;
+{
+    rb_gc_write_barrier(value);
+    return ST_CONTINUE;
+}
+
+void
+add_table_to_remembered_set(tbl)
+    st_table *tbl;
+{
+    if (!tbl) return;
+    st_foreach(tbl, add_entry_to_remembered_set, 0);
+}
+
+static int
+add_keyvalue_to_remembered_set(key, value)
+    VALUE key;
+    VALUE value;
+{
+    rb_gc_write_barrier(key);
+    rb_gc_write_barrier(value);
+    return ST_CONTINUE;
+}
+
+static void
+add_hash_to_remembered_set(tbl)
+    st_table *tbl;
+{
+    if (!tbl) return;
+    st_foreach(tbl, add_keyvalue_to_remembered_set, 0);
+}
+
+static void
+add_array_elements_to_remembered_set(x, n)
+    VALUE *x;
+    size_t n;
+{
+    VALUE v;
+    while (n--) {
+        v = *x;
+	if (is_pointer_to_heap((void *)v)) {
+	    rb_gc_write_barrier(v);
+	}
+	x++;
+    }
+}
+
+static void
+add_children_to_remembered_set(ptr)
+    VALUE ptr;
+{
+    RVALUE *obj = RANY(ptr);
+
+    if (FL_TEST(obj, FL_EXIVAR)) {
+	add_generic_ivar_to_remembered_set(ptr);
+    }
+
+    switch (obj->as.basic.flags & T_MASK) {
+      case T_NIL:
+      case T_FIXNUM:
+	rb_bug("add_children_to_remembered_set() called for broken object");
+	break;
+
+      case T_NODE:
+	rb_gc_write_barrier(obj->as.node.nd_file);
+	switch (nd_type(obj)) {
+	  case NODE_IF:		/* 1,2,3 */
+	  case NODE_FOR:
+	  case NODE_ITER:
+	  case NODE_CREF:
+	  case NODE_WHEN:
+	  case NODE_MASGN:
+	  case NODE_RESCUE:
+	  case NODE_RESBODY:
+	  case NODE_CLASS:
+	    rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+	    /* fall through */
+	  case NODE_BLOCK:	/* 1,3 */
+	  case NODE_ARRAY:
+	  case NODE_DSTR:
+	  case NODE_DXSTR:
+	  case NODE_DREGX:
+	  case NODE_DREGX_ONCE:
+	  case NODE_FBODY:
+	  case NODE_ENSURE:
+	  case NODE_CALL:
+	  case NODE_DEFS:
+	  case NODE_OP_ASGN1:
+	    rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+	    /* fall through */
+	  case NODE_SUPER:	/* 3 */
+	  case NODE_FCALL:
+	  case NODE_DEFN:
+	  case NODE_NEWLINE:
+	    rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
+	    break;
+
+	  case NODE_WHILE:	/* 1,2 */
+	  case NODE_UNTIL:
+	  case NODE_AND:
+	  case NODE_OR:
+	  case NODE_CASE:
+	  case NODE_SCLASS:
+	  case NODE_DOT2:
+	  case NODE_DOT3:
+	  case NODE_FLIP2:
+	  case NODE_FLIP3:
+	  case NODE_MATCH2:
+	  case NODE_MATCH3:
+	  case NODE_OP_ASGN_OR:
+	  case NODE_OP_ASGN_AND:
+	  case NODE_MODULE:
+	  case NODE_ALIAS:
+	  case NODE_VALIAS:
+	  case NODE_ARGS:
+	    rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+	    /* fall through */
+	  case NODE_METHOD:	/* 2 */
+	  case NODE_NOT:
+	  case NODE_GASGN:
+	  case NODE_LASGN:
+	  case NODE_DASGN:
+	  case NODE_DASGN_CURR:
+	  case NODE_IASGN:
+	  case NODE_CVDECL:
+	  case NODE_CVASGN:
+	  case NODE_COLON3:
+	  case NODE_OPT_N:
+	  case NODE_EVSTR:
+	  case NODE_UNDEF:
+	    rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+	    break;
+
+	  case NODE_HASH:	/* 1 */
+	  case NODE_LIT:
+	  case NODE_STR:
+	  case NODE_XSTR:
+	  case NODE_DEFINED:
+	  case NODE_MATCH:
+	  case NODE_RETURN:
+	  case NODE_BREAK:
+	  case NODE_NEXT:
+	  case NODE_YIELD:
+	  case NODE_COLON2:
+	  case NODE_SPLAT:
+	  case NODE_TO_ARY:
+	  case NODE_SVALUE:
+	    rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+	    break;
+
+	  case NODE_SCOPE:	/* 2,3 */
+	  case NODE_BLOCK_PASS:
+	  case NODE_CDECL:
+	    rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
+	    rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+	    break;
+
+	  case NODE_ZARRAY:	/* - */
+	  case NODE_ZSUPER:
+	  case NODE_CFUNC:
+	  case NODE_VCALL:
+	  case NODE_GVAR:
+	  case NODE_LVAR:
+	  case NODE_DVAR:
+	  case NODE_IVAR:
+	  case NODE_CVAR:
+	  case NODE_NTH_REF:
+	  case NODE_BACK_REF:
+	  case NODE_REDO:
+	  case NODE_RETRY:
+	  case NODE_SELF:
+	  case NODE_NIL:
+	  case NODE_TRUE:
+	  case NODE_FALSE:
+	  case NODE_ATTRSET:
+	  case NODE_BLOCK_ARG:
+	  case NODE_POSTEXE:
+	    break;
+	  case NODE_ALLOCA:
+	    add_array_elements_to_remembered_set((VALUE*)obj->as.node.u1.value,
+				 obj->as.node.u3.cnt);
+            rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+	    break;
+
+	  default:		/* unlisted NODE */
+	    if (is_pointer_to_heap(obj->as.node.u1.node)) {
+		rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+	    }
+	    if (is_pointer_to_heap(obj->as.node.u2.node)) {
+		rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+	    }
+	    if (is_pointer_to_heap(obj->as.node.u3.node)) {
+		rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
+	    }
+	}
+        return;	/* no need to mark class. */
+    }
+
+    rb_gc_write_barrier(obj->as.basic.klass);
+    switch (obj->as.basic.flags & T_MASK) {
+      case T_ICLASS:
+      case T_CLASS:
+      case T_MODULE:
+	add_table_to_remembered_set(obj->as.klass.m_tbl);
+        add_table_to_remembered_set(obj->as.klass.iv_tbl);
+        rb_gc_write_barrier(obj->as.klass.super);
+	break;
+
+      case T_ARRAY:
+	if (FL_TEST(obj, ELTS_SHARED)) {
+            rb_gc_write_barrier(obj->as.array.aux.shared);
+	}
+	else {
+	    VALUE *ptr = obj->as.array.ptr;
+            VALUE *pend = ptr + obj->as.array.len;
+	    while (ptr < pend) {
+		rb_gc_write_barrier(*ptr++);
+	    }
+	}
+	break;
+
+      case T_HASH:
+	add_hash_to_remembered_set(obj->as.hash.tbl);
+	rb_gc_write_barrier(obj->as.hash.ifnone);
+	break;
+
+      case T_STRING:
+#define STR_ASSOC FL_USER3   /* copied from string.c */
+	if (FL_TEST(obj, ELTS_SHARED|STR_ASSOC)) {
+	    rb_gc_write_barrier(obj->as.string.aux.shared);
+	}
+	break;
+
+      case T_DATA: 
+	rb_bug("add_children_to_remembered_set() encountered T_DATA 0x%lx", obj);
+	break;
+
+      case T_OBJECT:
+	add_table_to_remembered_set(obj->as.object.iv_tbl);
+	break;
+
+      case T_FILE:
+      case T_REGEXP:
+      case T_FLOAT:
+      case T_BIGNUM:
+      case T_BLKTAG:
+	break;
+
+      case T_MATCH:
+	if (obj->as.match.str) {
+	    rb_gc_write_barrier(obj->as.match.str);
+	}
+	break;
+
+      case T_VARMAP:
+	rb_gc_write_barrier(obj->as.varmap.val);
+	rb_gc_write_barrier(obj->as.varmap.next);
+	break;
+
+      case T_SCOPE:
+	if (obj->as.scope.local_vars && (obj->as.scope.flags & SCOPE_MALLOC)) {
+	    int n = obj->as.scope.local_tbl[0]+1;
+	    VALUE *vars = &obj->as.scope.local_vars[-1];
+
+	    while (n--) {
+    	        rb_gc_write_barrier(*vars++);
+	    }
+	}
+	break;
+
+      case T_STRUCT:
+	{
+	    VALUE *ptr = obj->as.rstruct.ptr;
+            VALUE *pend = ptr + obj->as.rstruct.len;
+            while (ptr < pend)
+	       rb_gc_write_barrier(*ptr++);
+	}
+	break;
+
+      default:
+	rb_bug("add_children_to_remembered_set(): unknown data type 0x%lx(0x%lx) %s",
+	       obj->as.basic.flags & T_MASK, obj,
+	       is_pointer_to_heap(obj) ? "corrupted object" : "non object");
+    }
+}
+
 static void
 rb_gc_mark_remembered_set()
 {
     remembered_set_t *rem;
 
+    if(longlife_allocation_since_last_gc) {
+        if(verbose_gc_stats) {
+	    fprintf(gc_data_file, "Re-marking remembered set\n");
+        }
+	--longlife_allocation_since_last_gc;
+	int i;
+        for (i = 0; i < heaps_used; i++) {
+            RVALUE *p, *pend;
+
+            if (heaps[i].lifetime == lifetime_longlife) {
+                p = heaps[i].slot; pend = p + heaps[i].limit;
+                struct heaps_slot* heap = heaps+i;
+                for (;p < pend; p++) {
+	            if(p->as.basic.flags) {
+		        add_children_to_remembered_set(p);
+		    }
+                }
+            }
+        }
+    }
+    else if(verbose_gc_stats) {
+        fprintf(gc_data_file, "Not re-marking remembered set\n");
+    }
     rem = remembered_set_ptr;
-    while (rem) {
+    while (rem) {  
         rb_gc_mark((VALUE)rem->obj);
         rem = rem->next;
     }
-}
+}                                                     
 
 static void
 clear_mark_longlife_heaps()
@@ -2307,6 +2663,9 @@ garbage_collect_0(VALUE *top_frame)
     init_mark_stack();
 
     if (longlife_collection) {
+	if (verbose_gc_stats) {
+	    fprintf(gc_data_file, "Garbage collecting longlife too\n");
+	}
         clear_mark_longlife_heaps();
     }
     else {

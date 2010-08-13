@@ -478,8 +478,9 @@ struct RBignum {
 #define FL_EXIVAR         (1<<9)
 #define FL_FREEZE         (1<<10)   
 #define FL_REMEMBERED_SET (1<<11)   
+#define FL_LONGLIFE       (1<<12)   
 
-#define FL_USHIFT    12
+#define FL_USHIFT    13
 
 #define FL_USER0     (1<<(FL_USHIFT+0))
 #define FL_USER1     (1<<(FL_USHIFT+1))
