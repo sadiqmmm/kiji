@@ -1371,7 +1371,7 @@ rb_gc_write_barrier(VALUE ptr)
 {
     RVALUE *obj = RANY(ptr);
 
-    if (ptr && !SPECIAL_CONST_P(ptr) && !(RBASIC(ptr)->flags & (FL_REMEMBERED_SET|FL_LONGLIFE))) {
+    if (ptr && !SPECIAL_CONST_P(ptr) && obj->as.basic.flags && !(RBASIC(ptr)->flags & (FL_REMEMBERED_SET|FL_LONGLIFE))) {
 	remembered_set_t *tmp;
         if (remembered_set_freed) {
             tmp = remembered_set_freed;
