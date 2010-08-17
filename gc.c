@@ -2101,7 +2101,6 @@ gc_sweep_for_longlife()
     }
 
     remembered_set_recycle();
-    longlife_collection = Qfalse;
 }
 
 void
@@ -2774,8 +2773,9 @@ garbage_collect_0(VALUE *top_frame)
 
     if (longlife_collection) {
       gc_longlife_cycles++;
+      longlife_collection = Qfalse;
     } else {
-      gc_cycles++;
+      gc_cycles++;               
     }
 
     if (gc_statistics) {
