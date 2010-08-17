@@ -2056,7 +2056,7 @@ static void
 gc_sweep_for_longlife()
 {
     RVALUE *p, *pend;
-    size_t i, freed = 0, really_freed;
+    size_t i, freed = 0, really_freed = 0, live = 0;
 
     longlife_freelist = 0;
     for (i = 0; i < heaps_used; i++) {
@@ -2073,14 +2073,15 @@ gc_sweep_for_longlife()
                 add_freelist(&longlife_freelist, p);
                 freed++;
 	    }
+	    else {
+		live++;    
+	    }
 	    p++;
 	}
     }
     if (verbose_gc_stats) {
-	/*
-	fprintf(gc_data_file, "objects processed: %.7d\n", live_objects+freed);
-	fprintf(gc_data_file, "live objects	: %.7d\n", live_objects);
-	*/
+	fprintf(gc_data_file, "longlife objects processed: %.7d\n", live + freed);
+	fprintf(gc_data_file, "longlife live objects     : %.7d\n", live);
 	fprintf(gc_data_file, "longlife freelist objects : %.7d\n", freed - really_freed);
 	fprintf(gc_data_file, "longlife freed objects    : %.7d\n", really_freed);
 /*
