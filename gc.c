@@ -91,6 +91,8 @@ static VALUE nomem_error;
 static void garbage_collect();
 
 static int longlife_allocation_since_last_gc = 0;
+static int longlife_heaps_used = 0;
+static int longlife_collection;
 
 /*
  *  call-seq:
@@ -263,6 +265,9 @@ ruby_xmalloc(size)
     }
     RUBY_CRITICAL(mem = malloc(size));
     if (!mem) {
+	if(longlife_heaps_used) {
+	    longlife_collection = Qtrue;
+	}
 	garbage_collect();
 	RUBY_CRITICAL(mem = malloc(size));
 	if (!mem) {
@@ -311,6 +316,9 @@ ruby_xrealloc(ptr, size)
     }
     RUBY_CRITICAL(mem = realloc(ptr, size));
     if (!mem) {
+	if(longlife_heaps_used) {
+	    longlife_collection = Qtrue;
+	}
 	garbage_collect();
 	RUBY_CRITICAL(mem = realloc(ptr, size));
 	if (!mem) {
@@ -342,7 +350,6 @@ static int dont_gc;
 static GC_TIME_TYPE gc_time = 0;
 static int gc_collections = 0;
 static int during_gc;
-static int longlife_collection;
 static int need_call_final = 0;
 static st_table *finalizer_table = 0;
 
@@ -782,7 +789,6 @@ static struct heaps_slot {
 } *heaps;
 static int heaps_length = 0;
 static int heaps_used   = 0;
-static int longlife_heaps_used = 0; // [ASz] objspace->heap.longlife_used
 
 static int heap_min_slots = 10000;
 static int heap_slots = 10000;
