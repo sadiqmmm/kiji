@@ -829,6 +829,7 @@ static void set_gc_parameters()
     if (gc_stats_ptr != NULL) {
 	int gc_stats_i = atoi(gc_stats_ptr);
 	if (gc_stats_i > 0) {
+            gc_statistics = Qtrue;
 	    verbose_gc_stats = Qtrue;
 	}
     }
