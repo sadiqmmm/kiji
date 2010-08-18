@@ -85,7 +85,7 @@ static VALUE *gc_stack_limit;
 static size_t malloc_increase = 0;
 static size_t malloc_limit = GC_MALLOC_LIMIT;
 static size_t unstressed_malloc_limit = GC_MALLOC_LIMIT;
-                 
+
 static void run_final();
 static VALUE nomem_error;
 static void garbage_collect();
@@ -93,6 +93,8 @@ static void garbage_collect();
 static int longlife_allocation_since_last_gc = 0;
 static int longlife_heaps_used = 0;
 static int longlife_collection;
+static int longlife_gc_after_gc_cycles = 1;
+static int gc_cycles_since_last_longlife_gc = 0;
 
 /*
  *  call-seq:
@@ -1076,7 +1078,10 @@ rb_newobj_longlife()
     RANY(obj)->line = ruby_sourceline;
 #endif
     if(!longlife_allocation_since_last_gc) {
-	longlife_allocation_since_last_gc = 1;
+        // Yes, there was an allocation
+        longlife_allocation_since_last_gc = 1;
+        // Reset the exponential backoff cycle
+        longlife_gc_after_gc_cycles = 1;
     }
     return obj;
 }
@@ -2669,7 +2674,21 @@ garbage_collect_0(VALUE *top_frame)
     rb_mark_table_prepare();
     init_mark_stack();
 
+    ++gc_cycles_since_last_longlife_gc;
+    if(!longlife_collection && longlife_gc_after_gc_cycles < gc_cycles_since_last_longlife_gc) {
+	if (verbose_gc_stats) {
+	    fprintf(gc_data_file, "Forcing longlife collection since %d GC cycles have passed without it (threshold %d)\n", gc_cycles_since_last_longlife_gc-1, longlife_gc_after_gc_cycles);
+	}
+	longlife_collection = Qtrue;
+	// Only double the interval if we actually completed the previous interval
+	// without intermittent longlife GC caused by different trigger. Also,
+	// never go over 1024 cycles
+	if(longlife_gc_after_gc_cycles < 1024) {
+            longlife_gc_after_gc_cycles *= 2;
+        }
+    }
     if (longlife_collection) {
+	gc_cycles_since_last_longlife_gc = 0;
 	if (verbose_gc_stats) {
 	    fprintf(gc_data_file, "Garbage collecting longlife too\n");
 	}
