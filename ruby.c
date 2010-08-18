@@ -873,7 +873,7 @@ load_file(fname, script)
     VALUE f;
     int line_start = 1;
 
-    if (!fname) rb_load_fail(fname);   
+    if (!fname) rb_load_fail(fname);
     if (strcmp(fname, "-") == 0) {
 	f = rb_stdin;
     }
@@ -972,9 +972,7 @@ load_file(fname, script)
 	    rb_io_ungetc(f, c);
 	}
 	require_libraries();	/* Why here? unnatural */
-	if (NIL_P(c)) {
-	    return;
-	}
+	if (NIL_P(c)) return;
     }
     rb_compile_file(fname, f, line_start);
     if (script && ruby__end__seen) {

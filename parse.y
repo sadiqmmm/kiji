@@ -929,7 +929,7 @@ fsym		: fname
 
 fitem		: fsym
 		    {
-			$$ = NEW_LIT_LONGLIFE(ID2SYM($1));
+			$$ = NEW_LIT(ID2SYM($1));
 		    }
 		| dsym
 		;
@@ -2001,7 +2001,7 @@ opt_ensure	: kENSURE compstmt
 literal		: numeric
 		| symbol
 		    {
-			$$ = NEW_LIT_LONGLIFE(ID2SYM($1));
+			$$ = NEW_LIT(ID2SYM($1));
 		    }
 		| dsym
 		;
@@ -2060,7 +2060,7 @@ regexp		: tREGEXP_BEG xstring_contents tREGEXP_END
 			int options = $3;
 			NODE *node = $2;
 			if (!node) {
-			    node = NEW_LIT_LONGLIFE(rb_reg_new("", 0, options & ~RE_OPTION_ONCE));
+			    node = NEW_LIT(rb_reg_new("", 0, options & ~RE_OPTION_ONCE));
 			}
 			else switch (nd_type(node)) {
 			  case NODE_STR:
@@ -3725,7 +3725,7 @@ yylex()
 	}
 	c &= 0xff;
 	lex_state = EXPR_END;
-	yylval.node = NEW_LIT_LONGLIFE(INT2FIX(c));
+	yylval.node = NEW_LIT(INT2FIX(c));
 	return tINTEGER;
 
       case '&':
@@ -3924,7 +3924,7 @@ yylex()
 			yyerror("numeric literal without digits");
 		    }
 		    else if (nondigit) goto trailing_uc;
-		    yylval.node = NEW_LIT_LONGLIFE(rb_cstr_to_inum(tok(), 2, Qfalse));
+		    yylval.node = NEW_LIT(rb_cstr_to_inum(tok(), 2, Qfalse));
 		    return tINTEGER;
 		}
 		if (c == 'd' || c == 'D') {
@@ -3948,7 +3948,7 @@ yylex()
 			yyerror("numeric literal without digits");
 		    }
 		    else if (nondigit) goto trailing_uc;
-		    yylval.node = NEW_LIT_LONGLIFE(rb_cstr_to_inum(tok(), 10, Qfalse));
+		    yylval.node = NEW_LIT(rb_cstr_to_inum(tok(), 10, Qfalse));
 		    return tINTEGER;
 		}
 		if (c == '_') {
@@ -3980,7 +3980,7 @@ yylex()
 			pushback(c);
 			tokfix();
 			if (nondigit) goto trailing_uc;
-			yylval.node = NEW_LIT_LONGLIFE(rb_cstr_to_inum(tok(), 8, Qfalse));
+			yylval.node = NEW_LIT(rb_cstr_to_inum(tok(), 8, Qfalse));
 			return tINTEGER;
 		    }
 		    if (nondigit) {
@@ -3997,7 +3997,7 @@ yylex()
 		}
 		else {
 		    pushback(c);
-		    yylval.node = NEW_LIT_LONGLIFE(INT2FIX(0));
+		    yylval.node = NEW_LIT(INT2FIX(0));
 		    return tINTEGER;
 		}
 	    }
@@ -4076,7 +4076,7 @@ yylex()
 		    rb_warn("Float %s out of range", tok());
 		    errno = 0;
 		}
-		yylval.node = NEW_LIT_LONGLIFE(rb_float_new(d));
+		yylval.node = NEW_LIT(rb_float_new(d));
 		return tFLOAT;
 	    }
 	    yylval.node = NEW_LIT(rb_cstr_to_inum(tok(), 10, Qfalse));
@@ -4948,7 +4948,7 @@ gettable(id)
 	return NEW_STR(rb_str_new2(ruby_sourcefile));
     }
     else if (id == k__LINE__) {
-	return NEW_LIT_LONGLIFE(INT2FIX(ruby_sourceline));
+	return NEW_LIT(INT2FIX(ruby_sourceline));
     }
     else if (is_local_id(id)) {
 	if (dyna_in_block() && rb_dvar_defined(id)) return NEW_DVAR(id);

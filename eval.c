@@ -2245,8 +2245,8 @@ rb_alias(klass, name, def)
 	}
     }
     st_insert(RCLASS(klass)->m_tbl, name,
-        (st_data_t)NEW_METHOD(NEW_FBODY(body, def, origin),
-            NOEX_WITH_SAFE(orig->nd_noex)));
+	      (st_data_t)NEW_METHOD(NEW_FBODY(body, def, origin),
+				    NOEX_WITH_SAFE(orig->nd_noex)));
 
     if (!ruby_running) return;
 
@@ -7128,7 +7128,7 @@ void
 rb_load(fname, wrap)
     VALUE fname;
     int wrap;
-{      
+{
     VALUE tmp;
     int state;
     volatile int prohibit_int = rb_prohibit_interrupt;
