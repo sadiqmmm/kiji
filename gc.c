@@ -2365,7 +2365,6 @@ add_children_to_remembered_set(ptr)
 	break;
 
       case T_NODE:
-	rb_gc_write_barrier(obj->as.node.nd_file);
 	switch (nd_type(obj)) {
 	  case NODE_IF:		/* 1,2,3 */
 	  case NODE_FOR:
@@ -2557,7 +2556,7 @@ add_children_to_remembered_set(ptr)
 
       case T_VARMAP:
 	rb_gc_write_barrier(obj->as.varmap.val);
-	rb_gc_write_barrier(obj->as.varmap.next);
+	rb_gc_write_barrier((VALUE)obj->as.varmap.next);
 	break;
 
       case T_SCOPE:
