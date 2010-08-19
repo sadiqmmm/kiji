@@ -1992,10 +1992,10 @@ gc_sweep()
     during_gc = 0;
     
     if (do_gc_stats) {
-	fprintf(gc_data_file, "objects processed: %.7d\n", live_objects+freed);
-	fprintf(gc_data_file, "live objects	: %.7d\n", live_objects);
-	fprintf(gc_data_file, "freelist objects : %.7d\n", freed - really_freed);
-	fprintf(gc_data_file, "freed objects	: %.7d\n", really_freed);
+	fprintf(gc_data_file, "objects processed: %.7lu\n", live_objects+freed);
+	fprintf(gc_data_file, "live objects	: %.7lu\n", live_objects);
+	fprintf(gc_data_file, "freelist objects : %.7lu\n", freed - really_freed);
+	fprintf(gc_data_file, "freed objects	: %.7lu\n", really_freed);
 	for(i = 0; i < 256; i++) {
 	    if (free_counts[i] > 0) {
 		fprintf(gc_data_file,
