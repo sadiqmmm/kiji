@@ -92,7 +92,7 @@ static void garbage_collect();
 
 static int longlife_allocation_since_last_gc = 0;
 static int longlife_heaps_used = 0;
-static int longlife_collection;
+static int longlife_collection = Qfalse;
 static int longlife_gc_after_gc_cycles = 1;
 static int gc_cycles_since_last_longlife_gc = 0;
 
@@ -817,8 +817,8 @@ static RVALUE *himem, *lomem;
 #include "marktable.c"
 #include "fastmarktable.c"
 
-static int gc_cycles;
-static int gc_longlife_cycles;
+static int gc_cycles = 0;
+static int gc_longlife_cycles = 0;
 
 static void set_gc_parameters()
 {
@@ -1489,7 +1489,7 @@ rb_gc_mark(ptr)
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (rb_mark_table_contains(obj)) return;  /* already marked */
     rb_mark_table_add(obj);
-                        	
+
     if (__stack_past(gc_stack_limit, STACK_END))
       push_mark_stack(ptr);
     else{
