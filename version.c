@@ -27,6 +27,7 @@ const char *ruby_description;
 const char *ruby_copyright;
 
 #define REE_VERSION "2010.02"
+#define KIJI_VERSION "0.1"
 
 void
 Init_version()
@@ -46,10 +47,11 @@ Init_version()
     rb_define_global_const("RUBY_PATCHLEVEL", INT2FIX(RUBY_PATCHLEVEL));
 
     snprintf(description, sizeof(description),
-             "ruby %s (%s %s %d) [%s], MBARI 0x%x, Ruby Enterprise Edition %s",
+             "ruby %s (%s %s %d) [%s], MBARI 0x%x, "
+             "Ruby Enterprise Edition %s, Kiji %s",
              RUBY_VERSION, RUBY_RELEASE_DATE, RUBY_RELEASE_STR,
              RUBY_RELEASE_NUM, RUBY_PLATFORM,
-             STACK_WIPE_SITES, REE_VERSION);
+             STACK_WIPE_SITES, REE_VERSION, KIJI_VERSION);
     ruby_description = description;
     tmp = rb_obj_freeze(rb_str_new2(description));
     rb_define_global_const("RUBY_DESCRIPTION", tmp);
