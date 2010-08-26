@@ -2771,8 +2771,6 @@ rb_compile_cstr(f, s, len, line)
     return rb_compile_string(f, rb_str_new(s, len), line);
 }
 
-static int alloc_nodes_in_longlife=0;
-
 NODE*
 rb_compile_file(f, file, start)
     const char *f;
@@ -2784,10 +2782,7 @@ rb_compile_file(f, file, start)
     lex_pbeg = lex_p = lex_pend = 0;
     ruby_sourceline = start - 1;
 
-    alloc_nodes_in_longlife = 1;
-    NODE* retval = yycompile(f, start);
-    alloc_nodes_in_longlife = 0;
-    return retval;
+    return yycompile(f, start);
 }
 
 static inline int
@@ -4613,7 +4608,7 @@ rb_node_newnode_longlife(type, a0, a1, a2)
     enum node_type type;
     VALUE a0, a1, a2;
 {
-    NODE *n = (NODE*)alloc_nodes_in_longlife ? rb_newobj_longlife() : rb_newobj();
+    NODE *n = (NODE*) rb_newobj_longlife();
 
     n->flags |= T_NODE;
     nd_set_type(n, type);
