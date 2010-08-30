@@ -27,7 +27,9 @@ const char *ruby_description;
 const char *ruby_copyright;
 
 #define REE_VERSION "2010.02"
+
 #define KIJI_VERSION "0.1"
+const char ruby_kiji_version[] = KIJI_VERSION;
 
 void
 Init_version()
@@ -38,6 +40,7 @@ Init_version()
     VALUE v = MKSTR(version);
     VALUE d = MKSTR(release_date);
     VALUE p = MKSTR(platform);
+    VALUE k = MKSTR(kiji_version);
     VALUE tmp;
 
     rb_define_global_const("RUBY_ENGINE", e);
@@ -45,6 +48,7 @@ Init_version()
     rb_define_global_const("RUBY_RELEASE_DATE", d);
     rb_define_global_const("RUBY_PLATFORM", p);
     rb_define_global_const("RUBY_PATCHLEVEL", INT2FIX(RUBY_PATCHLEVEL));
+    rb_define_global_const("KIJI_VERSION", k);
 
     snprintf(description, sizeof(description),
              "ruby %s (%s %s %d) [%s], MBARI 0x%x, "
