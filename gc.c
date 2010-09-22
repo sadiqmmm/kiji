@@ -90,10 +90,14 @@ static void run_final();
 static VALUE nomem_error;
 static void garbage_collect();
 
+
+#define LONGLIFE_CYCLE_INITIAL_DELAY 8
+#define LONGLIFE_CYCLE_DELAY_FACTOR 2
+#define LONGLIFE_CYCLE_MAX_DELAY 1024
 static int longlife_allocation_since_last_gc = 0;
 static int longlife_heaps_used = 0;
 static int longlife_collection = Qfalse;
-static int longlife_gc_after_gc_cycles = 1;
+static int longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_INITIAL_DELAY;
 static int gc_cycles_since_last_longlife_gc = 0;
 
 /*
@@ -1081,7 +1085,7 @@ rb_newobj_longlife()
         // Yes, there was an allocation
         longlife_allocation_since_last_gc = 1;
         // Reset the exponential backoff cycle
-        longlife_gc_after_gc_cycles = 1;
+        longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_INITIAL_DELAY;
     }
     return obj;
 }
@@ -2679,11 +2683,12 @@ garbage_collect_0(VALUE *top_frame)
 	    fprintf(gc_data_file, "Forcing longlife collection since %d GC cycles have passed without it (threshold %d)\n", gc_cycles_since_last_longlife_gc-1, longlife_gc_after_gc_cycles);
 	}
 	longlife_collection = Qtrue;
-	// Only double the interval if we actually completed the previous interval
-	// without intermittent longlife GC caused by different trigger. Also,
-	// never go over 1024 cycles
-	if(longlife_gc_after_gc_cycles < 1024) {
-            longlife_gc_after_gc_cycles *= 2;
+	// Only extend the interval if we actually completed the previous interval
+	// without intermittent longlife GC caused by different trigger. 
+        longlife_gc_after_gc_cycles *= LONGLIFE_CYCLE_DELAY_FACTOR;
+	// Never go over maximum specified cycles
+	if(longlife_gc_after_gc_cycles > LONGLIFE_CYCLE_MAX_DELAY) {
+	    longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_MAX_DELAY;
         }
     }
     if (longlife_collection) {
