@@ -771,8 +771,6 @@ typedef struct RVALUE {
 #pragma pack(pop)
 #endif
 
-static RVALUE *freelist = 0;
-static RVALUE *longlife_freelist = 0;
 static RVALUE *deferred_final_list = 0;
 
 typedef enum lifetime {
@@ -797,10 +795,17 @@ static int heaps_length = 0;
 static int heaps_used   = 0;
 
 static int heap_min_slots = 10000;
-static int heap_slots = 10000;
+typedef struct heaps_space {
+    int heap_slots;
+    int heap_slots_increment;
+    enum lifetime lifetime;
+    RVALUE *freelist;
+} heaps_space_t;
+
+static heaps_space_t normal_heaps_space;
+static heaps_space_t longlife_heaps_space;
 
 static int heap_free_min = 4096;
-static int heap_slots_increment = 10000;
 static double heap_slots_growth_factor = 1.8;
 
 static int verbose_gc_stats = Qfalse;
@@ -859,7 +864,8 @@ static void set_gc_parameters()
 	    fprintf(gc_data_file, "RUBY_HEAP_MIN_SLOTS=%s\n", min_slots_ptr);
         }
 	if (min_slots_i > 0) {
-	    heap_slots = min_slots_i;
+	    normal_heaps_space.heap_slots = min_slots_i;
+	    longlife_heaps_space.heap_slots = min_slots_i;
 	    heap_min_slots = min_slots_i;
 	}
     }
@@ -893,7 +899,8 @@ static void set_gc_parameters()
 	    fprintf(gc_data_file, "RUBY_HEAP_SLOTS_INCREMENT=%s\n", heap_slots_incr_ptr);
 	}
 	if (heap_slots_incr_i > 0) {
-	    heap_slots_increment = heap_slots_incr_i;
+	    normal_heaps_space.heap_slots_increment = heap_slots_incr_i;
+	    longlife_heaps_space.heap_slots_increment = heap_slots_incr_i;
 	}
     }
     heap_slots_growth_factor_ptr = getenv("RUBY_HEAP_SLOTS_GROWTH_FACTOR");
@@ -968,9 +975,14 @@ rb_gc_log(self, original_str)
 }
 
 
-// [ASz] eq. to assign_heap_slot() from 1.9.x
+static inline void push_freelist(heaps_space_t *heaps_space, RVALUE *p)
+{
+    p->as.free.next = heaps_space->freelist;
+    heaps_space->freelist = p;
+}
+
 static void
-add_heap(RVALUE **list, enum lifetime lifetime)
+add_heap(heaps_space_t *heaps_space)
 {
     RVALUE *p, *pend;
 
@@ -993,40 +1005,39 @@ add_heap(RVALUE **list, enum lifetime lifetime)
     }
 
     for (;;) {
-	RUBY_CRITICAL(p = (RVALUE*)alloc_ruby_heap(sizeof(RVALUE)*(heap_slots+1)));
+	RUBY_CRITICAL(p = (RVALUE*)alloc_ruby_heap(sizeof(RVALUE)*(heaps_space->heap_slots+1)));
 	if (p == 0) {
-	    if (heap_slots == heap_min_slots) {
+	    if (heaps_space->heap_slots == heap_min_slots) {
 		rb_memerror();
 	    }
-	    heap_slots = heap_min_slots;
+	    heaps_space->heap_slots = heap_min_slots;
 	    continue;
 	}
         heaps[heaps_used].membase = p;
         if ((VALUE)p % sizeof(RVALUE) == 0)
-            heap_slots += 1;
+            heaps_space->heap_slots += 1;
         else
             p = (RVALUE*)((VALUE)p + sizeof(RVALUE) - ((VALUE)p % sizeof(RVALUE)));
         heaps[heaps_used].slot = p;
-        heaps[heaps_used].limit = heap_slots;
-        heaps[heaps_used].slotlimit = p + heap_slots;
-        heaps[heaps_used].marks_size = (int) (ceil(heap_slots / (sizeof(int) * 8.0)));
+        heaps[heaps_used].limit = heaps_space->heap_slots;
+        heaps[heaps_used].slotlimit = p + heaps_space->heap_slots;
+        heaps[heaps_used].marks_size = (int) (ceil(heaps_space->heap_slots / (sizeof(int) * 8.0)));
         heaps[heaps_used].marks = (int *) calloc(heaps[heaps_used].marks_size, sizeof(int));
-        heaps[heaps_used].lifetime = lifetime;
+        heaps[heaps_used].lifetime = heaps_space->lifetime;
 	break;
     }
-    pend = p + heap_slots;
+    pend = p + heaps_space->heap_slots;
     if (lomem == 0 || lomem > p) lomem = p;
     if (himem < pend) himem = pend;
-    if (lifetime == lifetime_longlife) longlife_heaps_used++;
+    if (heaps_space->lifetime == lifetime_longlife) longlife_heaps_used++;
     heaps_used++;
-    heap_slots += heap_slots_increment;
-    heap_slots_increment *= heap_slots_growth_factor;
-    if (heap_slots <= 0) heap_slots = heap_min_slots;
+    heaps_space->heap_slots += heaps_space->heap_slots_increment;
+    heaps_space->heap_slots_increment *= heap_slots_growth_factor;
+    if (heaps_space->heap_slots <= 0) heaps_space->heap_slots = heap_min_slots;
 
     while (p < pend) {
 	p->as.free.flags = 0;
-	p->as.free.next = *list;
-	*list = p;
+	push_freelist(heaps_space, p);
 	p++;
     }
 }
@@ -1039,6 +1050,19 @@ rb_during_gc()
     return during_gc;
 }
 
+static inline VALUE
+pop_freelist(heaps_space_t* heaps_space)
+{
+    VALUE obj = (VALUE)heaps_space->freelist;
+    heaps_space->freelist = heaps_space->freelist->as.free.next;
+    MEMZERO((void*)obj, RVALUE, 1);
+#ifdef GC_DEBUG
+    RANY(obj)->file = ruby_sourcefile;
+    RANY(obj)->line = ruby_sourceline;
+#endif
+    return obj;
+}
+
 VALUE
 rb_newobj()
 {
@@ -1047,18 +1071,20 @@ rb_newobj()
     if (during_gc)
 	rb_bug("object allocation during garbage collection phase");
 
-    if (!malloc_limit || !freelist) garbage_collect();
+    if (!malloc_limit || !normal_heaps_space.freelist) garbage_collect();
 
-    obj = (VALUE)freelist;
-    freelist = freelist->as.free.next;
-    MEMZERO((void*)obj, RVALUE, 1);
-#ifdef GC_DEBUG
-    RANY(obj)->file = ruby_sourcefile;
-    RANY(obj)->line = ruby_sourceline;
-#endif
+    obj = pop_freelist(&normal_heaps_space);
     live_objects++;
     allocated_objects++;
     return obj;
+}
+
+static inline void
+add_heap_if_needed(heaps_space_t* heaps_space)
+{
+    if(!heaps_space->freelist) {
+	add_heap(heaps_space);
+    }
 }
 
 VALUE
@@ -1069,18 +1095,9 @@ rb_newobj_longlife()
     if (during_gc)
 	rb_bug("object allocation during garbage collection phase");
 
-    if(!longlife_freelist) {
-	add_heap(&longlife_freelist, lifetime_longlife);
-    }
-
-    obj = (VALUE)longlife_freelist;
-    longlife_freelist = longlife_freelist->as.free.next;
-    MEMZERO((void*)obj, RVALUE, 1);
+    add_heap_if_needed(&longlife_heaps_space);
+    obj = pop_freelist(&longlife_heaps_space);
     RBASIC(obj)->flags |= FL_LONGLIFE;
-#ifdef GC_DEBUG
-    RANY(obj)->file = ruby_sourcefile;
-    RANY(obj)->line = ruby_sourceline;
-#endif
     if(!longlife_allocation_since_last_gc) {
         // Yes, there was an allocation
         longlife_allocation_since_last_gc = 1;
@@ -1758,16 +1775,15 @@ gc_mark_children(ptr)
 static int obj_free _((VALUE));
 
 static inline void
-add_freelist(RVALUE **list, RVALUE *p)
+add_freelist(heaps_space_t* heaps_space, RVALUE *p)
 {           
     /* Do not touch the fields if they don't have to be modified.
      * This is in order to preserve copy-on-write semantics.
      */
     if (p->as.free.flags != 0)
 	p->as.free.flags = 0;
-    if (p->as.free.next != *list) {
-	p->as.free.next = *list;
-        *list = p;
+    if (p->as.free.next != heaps_space->freelist) {
+	push_freelist(heaps_space, p);
     }
 }
             
@@ -1776,15 +1792,15 @@ static void add_to_correct_freelist(RVALUE *p)
     int has_longlife_flag = FL_TEST(p, FL_LONGLIFE);
     // Has explicit longlife flag
     if(has_longlife_flag) {
-        add_freelist(&longlife_freelist, p);
+        add_freelist(&longlife_heaps_space, p);
     }
     // Has some flags (so they weren't cleared), but not longlife
     else if(p->as.free.flags != 0 && !has_longlife_flag) {
-	add_freelist(&freelist, p);
+	add_freelist(&normal_heaps_space, p);
     }    
     // If all else fails, use slower is_pointer_to_longlife_heap()
     else {
-        add_freelist(is_pointer_to_longlife_heap(p) ? &longlife_freelist : &freelist, p);    	
+        add_freelist(is_pointer_to_longlife_heap(p) ? &longlife_heaps_space : &normal_heaps_space, p);
     }
 }       
 
@@ -1908,12 +1924,12 @@ gc_sweep()
 	}
     }
 
-    freelist = 0;
+    normal_heaps_space.freelist = 0;
     final_list = deferred_final_list;
     deferred_final_list = 0;
     for (i = 0; i < heaps_used; i++) {
 	int n = 0;
-	RVALUE *free = freelist;
+	RVALUE *free = normal_heaps_space.freelist;
 	RVALUE *final = final_list;
 	int deferred;
 
@@ -1945,7 +1961,7 @@ gc_sweep()
 				free_counts[builtin_type]++;
 			    }
 			}
-			add_freelist(&freelist, p);
+			add_freelist(&normal_heaps_space, p);
 		    }
 		}
 		else {
@@ -1955,7 +1971,7 @@ gc_sweep()
 			    free_counts[builtin_type]++;
 			}
 		    }
-		    add_freelist(&freelist, p);
+		    add_freelist(&normal_heaps_space, p);
 		}
 		n++;
 	    }
@@ -1980,7 +1996,7 @@ gc_sweep()
 	    for (pp = final_list; pp != final; pp = pp->as.free.next) {
 		pp->as.free.flags |= FL_SINGLETON; /* freeing page mark */
 	    }
-	    freelist = free;	/* cancel this page from freelist */
+	    normal_heaps_space.freelist = free;	/* cancel this page from freelist */
 	}
 	else {
 	    freed += n;
@@ -1991,7 +2007,7 @@ gc_sweep()
 	if(longlife_heaps_used) {
 	    longlife_collection = Qtrue;
 	}
-	add_heap(&freelist, lifetime_normal);
+	add_heap(&normal_heaps_space);
     }
     during_gc = 0;
     
@@ -2013,15 +2029,13 @@ gc_sweep()
     /* clear finalization list */
     if (final_list) {
 	deferred_final_list = final_list;
-	if (!freelist && !rb_thread_critical) {
+	if (!normal_heaps_space.freelist && !rb_thread_critical) {
 	    rb_gc_finalize_deferred();
 	}
 	else {
 	    rb_thread_pending = 1;
 	}
-	if (!freelist) {
-	    add_heap(&freelist, lifetime_normal);
-	}
+	add_heap_if_needed(&normal_heaps_space);
 	return;
     }
     free_unused_heaps();
@@ -2068,7 +2082,7 @@ gc_sweep_for_longlife()
     RVALUE *p, *pend;
     size_t i, freed = 0, really_freed = 0, live = 0;
 
-    longlife_freelist = 0;
+    longlife_heaps_space.freelist = 0;
     for (i = 0; i < heaps_used; i++) {
 
         if (heaps[i].lifetime == lifetime_normal) continue;
@@ -2080,7 +2094,7 @@ gc_sweep_for_longlife()
                     obj_free((VALUE)p);
 		    really_freed++;
                 }
-                add_freelist(&longlife_freelist, p);
+                add_freelist(&longlife_heaps_space, p);
                 freed++;
 	    }
 	    else {
@@ -2657,10 +2671,8 @@ garbage_collect_0(VALUE *top_frame)
     }
 #endif
     if (dont_gc || during_gc) {
-	if (!freelist) {
-	    add_heap(&freelist, lifetime_normal);
-	}
-	return;
+        add_heap_if_needed(&normal_heaps_space);
+        return;
     }
     if (during_gc) return;
     during_gc++;
@@ -3010,6 +3022,12 @@ void ruby_init_stack(VALUE *addr
 #endif
 }
 
+static void init_heaps_space(heaps_space_t* heaps_space, enum lifetime lifetime)
+{
+    heaps_space->lifetime = lifetime;
+    heaps_space->heap_slots = 10000;
+    heaps_space->heap_slots_increment = 10000;
+}
 /*
  * Document-class: ObjectSpace
  *
@@ -3050,8 +3068,11 @@ Init_heap()
     if (!rb_gc_stack_start) {
 	Init_stack(0);
     }
+    init_heaps_space(&normal_heaps_space, lifetime_normal);
+    init_heaps_space(&longlife_heaps_space, lifetime_longlife);
     set_gc_parameters();
-    add_heap(&freelist, lifetime_normal);
+
+    add_heap(&normal_heaps_space);
 }
 
 static VALUE
