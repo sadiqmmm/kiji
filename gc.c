@@ -220,6 +220,10 @@ void rb_gc_unstress(void)
 NORETURN(void rb_exc_jump _((VALUE)));
 
 static unsigned long live_objects = 0;
+static unsigned long max_live_objects = 0;
+static unsigned long longlife_live_objects = 0;
+static unsigned long longlife_max_live_objects = 0;
+
 unsigned long rb_os_live_objects()
 { return live_objects; }
 
@@ -1075,6 +1079,9 @@ rb_newobj()
 
     obj = pop_freelist(&normal_heaps_space);
     live_objects++;
+    if(live_objects > max_live_objects) {
+	max_live_objects = live_objects;
+    }
     allocated_objects++;
     return obj;
 }
@@ -1103,6 +1110,10 @@ rb_newobj_longlife()
         longlife_allocation_since_last_gc = 1;
         // Reset the exponential backoff cycle
         longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_INITIAL_DELAY;
+    }
+    longlife_live_objects++;
+    if(longlife_live_objects > longlife_max_live_objects) {
+	longlife_max_live_objects = longlife_live_objects;
     }
     return obj;
 }
@@ -2103,6 +2114,7 @@ gc_sweep_for_longlife()
 	    p++;
 	}
     }
+    longlife_live_objects = live;
     if (verbose_gc_stats) {
 	fprintf(gc_data_file, "longlife objects processed: %.7d\n", live + freed);
 	fprintf(gc_data_file, "longlife live objects     : %.7d\n", live);
@@ -3738,6 +3750,14 @@ static
 VALUE os_live_objects(VALUE self)
 { return ULONG2NUM(live_objects); }
 
+static
+VALUE os_max_live_objects(VALUE self)
+{ return ULONG2NUM(max_live_objects); }
+
+static
+VALUE os_longlife_max_live_objects(VALUE self)
+{ return ULONG2NUM(longlife_max_live_objects); }
+
 /* call-seq:
  *  ObjectSpace.allocated_objects => number
  *
@@ -3803,6 +3823,8 @@ Init_GC()
     rb_define_module_function(rb_mObSpace, "finalizers", finals, 0);
     rb_define_module_function(rb_mObSpace, "call_finalizer", call_final, 1);
     rb_define_module_function(rb_mObSpace, "live_objects", os_live_objects, 0);
+    rb_define_module_function(rb_mObSpace, "max_live_objects", os_max_live_objects, 0);
+    rb_define_module_function(rb_mObSpace, "longlife_max_live_objects", os_longlife_max_live_objects, 0);
     rb_define_module_function(rb_mObSpace, "allocated_objects", os_allocated_objects, 0);
 
     rb_define_module_function(rb_mObSpace, "define_finalizer", define_final, -1);
