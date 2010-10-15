@@ -49,6 +49,9 @@ char *strstr _((const char*,const char*));
 char *getenv();
 #endif
 
+#define RUBY_BINARY_NAME "ruby"
+#define KIJI_BINARY_NAME "kiji"
+
 VALUE ruby_debug = Qfalse;
 VALUE ruby_verbose = Qfalse;
 static int sflag = 0;
@@ -908,7 +911,8 @@ load_file(fname, script)
 		if (RSTRING(line)->len > 2
 		    && RSTRING(line)->ptr[0] == '#'
 		    && RSTRING(line)->ptr[1] == '!') {
-		    if ((p = strstr(RSTRING(line)->ptr, "ruby")) != 0) {
+                   if (((p = strstr(RSTRING(line)->ptr, RUBY_BINARY_NAME)) != NULL) ||
+                       ((p = strstr(RSTRING(line)->ptr, KIJI_BINARY_NAME)) != NULL)) {
 			goto start_read;
 		    }
 		}
@@ -923,7 +927,8 @@ load_file(fname, script)
 	    line_start++;
 
 	    if (RSTRING(line)->len > 2 && RSTRING(line)->ptr[0] == '!') {
-		if ((p = strstr(RSTRING(line)->ptr, "ruby")) == 0) {
+		if (((p = strstr(RSTRING(line)->ptr, RUBY_BINARY_NAME)) == NULL) &&
+		    ((p = strstr(RSTRING(line)->ptr, KIJI_BINARY_NAME)) == NULL)) {
 		    /* not ruby script, kick the program */
 		    char **argv;
 		    char *path;
