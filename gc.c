@@ -93,7 +93,9 @@ static void garbage_collect();
 
 #define LONGLIFE_CYCLE_INITIAL_DELAY 8
 #define LONGLIFE_CYCLE_DELAY_FACTOR 2
+#define LONGLIFE_CYCLE_DEFAULT_DELAY 128
 #define LONGLIFE_CYCLE_MAX_DELAY 1024
+static int longlife_max_delay = LONGLIFE_CYCLE_DEFAULT_DELAY;
 static int longlife_allocation_since_last_gc = 0;
 static int longlife_heaps_used = 0;
 static int longlife_collection = Qfalse;
@@ -836,7 +838,8 @@ static int gc_longlife_cycles = 0;
 static void set_gc_parameters()
 {
     char *gc_stats_ptr, *min_slots_ptr, *free_min_ptr, *heap_slots_incr_ptr,
-      *heap_incr_ptr, *malloc_limit_ptr, *gc_heap_file_ptr, *heap_slots_growth_factor_ptr;
+         *heap_incr_ptr, *malloc_limit_ptr, *gc_heap_file_ptr,
+         *heap_slots_growth_factor_ptr, *longlife_max_delay_ptr;
 
     gc_data_file = stderr;
 
@@ -926,6 +929,18 @@ static void set_gc_parameters()
 	}
 	if (malloc_limit_i > 0) {
 	    malloc_limit = malloc_limit_i;
+	}
+    }
+
+    longlife_max_delay_ptr = getenv("RUBY_GC_LONGLIFE_MAX_DELAY");
+    if (longlife_max_delay_ptr != NULL) {
+	int longlife_max_delay_i = atol(longlife_max_delay_ptr);
+        if (verbose_gc_stats) {
+	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_MAX_DELAY=%s\n", longlife_max_delay_ptr);
+	}
+	if (longlife_max_delay_i > 0 &&
+            longlife_max_delay_i <= LONGLIFE_CYCLE_MAX_DELAY) {
+	    longlife_max_delay = longlife_max_delay_i;
 	}
     }
 }
@@ -2711,8 +2726,8 @@ garbage_collect_0(VALUE *top_frame)
 	// without intermittent longlife GC caused by different trigger. 
         longlife_gc_after_gc_cycles *= LONGLIFE_CYCLE_DELAY_FACTOR;
 	// Never go over maximum specified cycles
-	if(longlife_gc_after_gc_cycles > LONGLIFE_CYCLE_MAX_DELAY) {
-	    longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_MAX_DELAY;
+	if(longlife_gc_after_gc_cycles > longlife_max_delay) {
+	    longlife_gc_after_gc_cycles = longlife_max_delay;
         }
     }
     if (longlife_collection) {
@@ -3681,13 +3696,13 @@ os_statistics_work(lifetime_t lt)
 static VALUE
 os_statistics()
 {
-    os_statistics_work(lifetime_normal);
+    return os_statistics_work(lifetime_normal);
 }
 
 static VALUE
 os_longlife_statistics()
 {
-    os_statistics_work(lifetime_longlife);
+    return os_statistics_work(lifetime_longlife);
 }
 
 /*
