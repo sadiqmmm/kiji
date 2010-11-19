@@ -93,6 +93,7 @@ static void garbage_collect();
 
 #define LONGLIFE_CYCLE_INITIAL_DELAY 8
 #define LONGLIFE_CYCLE_DELAY_FACTOR 2
+#define LONGLIFE_CYCLE_MIN_DELAY LONGLIFE_CYCLE_INITIAL_DELAY
 #define LONGLIFE_CYCLE_DEFAULT_DELAY 128
 #define LONGLIFE_CYCLE_MAX_DELAY 1024
 static int longlife_max_delay = LONGLIFE_CYCLE_DEFAULT_DELAY;
@@ -938,7 +939,7 @@ static void set_gc_parameters()
         if (verbose_gc_stats) {
 	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_MAX_DELAY=%s\n", longlife_max_delay_ptr);
 	}
-	if (longlife_max_delay_i > 0 &&
+	if (longlife_max_delay_i >= LONGLIFE_CYCLE_MIN_DELAY &&
             longlife_max_delay_i <= LONGLIFE_CYCLE_MAX_DELAY) {
 	    longlife_max_delay = longlife_max_delay_i;
 	}
