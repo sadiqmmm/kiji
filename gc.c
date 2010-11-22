@@ -91,16 +91,16 @@ static VALUE nomem_error;
 static void garbage_collect();
 
 
-#define LONGLIFE_CYCLE_INITIAL_DELAY 8
-#define LONGLIFE_CYCLE_DELAY_FACTOR 2
-#define LONGLIFE_CYCLE_MIN_DELAY LONGLIFE_CYCLE_INITIAL_DELAY
+#define LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY 8
 #define LONGLIFE_CYCLE_DEFAULT_DELAY 128
+#define LONGLIFE_CYCLE_DELAY_FACTOR 2
 #define LONGLIFE_CYCLE_MAX_DELAY 1024
+static int longlife_initial_delay = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
+static int longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
 static int longlife_max_delay = LONGLIFE_CYCLE_DEFAULT_DELAY;
 static int longlife_allocation_since_last_gc = 0;
 static int longlife_heaps_used = 0;
 static int longlife_collection = Qfalse;
-static int longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_INITIAL_DELAY;
 static int gc_cycles_since_last_longlife_gc = 0;
 
 /*
@@ -840,7 +840,8 @@ static void set_gc_parameters()
 {
     char *gc_stats_ptr, *min_slots_ptr, *free_min_ptr, *heap_slots_incr_ptr,
          *heap_incr_ptr, *malloc_limit_ptr, *gc_heap_file_ptr,
-         *heap_slots_growth_factor_ptr, *longlife_max_delay_ptr;
+         *heap_slots_growth_factor_ptr, *longlife_max_delay_ptr,
+         *longlife_initial_delay_ptr;
 
     gc_data_file = stderr;
 
@@ -939,9 +940,22 @@ static void set_gc_parameters()
         if (verbose_gc_stats) {
 	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_MAX_DELAY=%s\n", longlife_max_delay_ptr);
 	}
-	if (longlife_max_delay_i >= LONGLIFE_CYCLE_MIN_DELAY &&
+	if (longlife_max_delay_i >= 0 &&
             longlife_max_delay_i <= LONGLIFE_CYCLE_MAX_DELAY) {
 	    longlife_max_delay = longlife_max_delay_i;
+	}
+    }
+
+    longlife_initial_delay_ptr = getenv("RUBY_GC_LONGLIFE_INITIAL_DELAY");
+    if (longlife_initial_delay_ptr != NULL) {
+	int longlife_initial_delay_i = atol(longlife_initial_delay_ptr);
+        if (verbose_gc_stats) {
+	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_INITIAL_DELAY=%s\n", longlife_initial_delay_ptr);
+	}
+	if (longlife_initial_delay_i >= 0 &&
+            longlife_initial_delay_i <= LONGLIFE_CYCLE_MAX_DELAY) {
+          longlife_initial_delay = longlife_initial_delay_ptr;
+          longlife_gc_after_gc_cycles = longlife_initial_delay;
 	}
     }
 }
@@ -1125,7 +1139,7 @@ rb_newobj_longlife()
         // Yes, there was an allocation
         longlife_allocation_since_last_gc = 1;
         // Reset the exponential backoff cycle
-        longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_INITIAL_DELAY;
+        longlife_gc_after_gc_cycles = longlife_initial_delay;
     }
     longlife_live_objects++;
     if(longlife_live_objects > longlife_max_live_objects) {
