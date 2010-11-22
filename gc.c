@@ -954,7 +954,7 @@ static void set_gc_parameters()
 	}
 	if (longlife_initial_delay_i >= 0 &&
             longlife_initial_delay_i <= LONGLIFE_CYCLE_MAX_DELAY) {
-          longlife_initial_delay = longlife_initial_delay_ptr;
+          longlife_initial_delay = longlife_initial_delay_i;
           longlife_gc_after_gc_cycles = longlife_initial_delay;
 	}
     }
