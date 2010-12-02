@@ -1946,9 +1946,8 @@ gc_sweep()
         free_min = heap_free_min;
 
     if (do_gc_stats) {
-	for (i = 0 ; i< 256; i++) {
-	    free_counts[i] = live_counts[i] = 0;
-	}
+	memset(&free_counts, 0, 256 * sizeof(int));
+	memset(&live_counts, 0, 256 * sizeof(int));
     }
 
     if (ruby_in_compile && ruby_parser_stack_on_heap()) {
@@ -2058,7 +2057,7 @@ gc_sweep()
 	fprintf(gc_data_file, "freelist objects : %.7lu\n", freed - really_freed);
 	fprintf(gc_data_file, "freed objects	: %.7lu\n", really_freed);
 	for(i = 0; i < 256; i++) {
-	    if (free_counts[i] > 0) {
+	    if (free_counts[i] > 0 || live_counts[i] > 0) {
 		fprintf(gc_data_file,
 			"kept %.7d / freed %.7d objects of type %s\n",
 			live_counts[i], free_counts[i], obj_type(i));
@@ -2122,6 +2121,14 @@ gc_sweep_for_longlife()
 {
     RVALUE *p, *pend;
     size_t i, freed = 0, really_freed = 0, live = 0;
+    int free_counts[256];
+    int live_counts[256];
+
+    int do_gc_stats = gc_statistics && verbose_gc_stats;
+    if (do_gc_stats) {
+	memset(&free_counts, 0, 256 * sizeof(int));
+	memset(&live_counts, 0, 256 * sizeof(int));
+    }
 
     longlife_heaps_space.freelist = 0;
     for (i = 0; i < heaps_used; i++) {
@@ -2133,32 +2140,38 @@ gc_sweep_for_longlife()
 	    if (!rb_mark_table_heap_contains(hs, p)) {
                 if (p->as.basic.flags) {
                     obj_free((VALUE)p);
-		    really_freed++;
+		    if(do_gc_stats) {
+		        really_freed++;
+		    }
                 }
+		if(do_gc_stats) {
+	            freed++;
+		    live_counts[BUILTIN_TYPE(p)]++;
+		}
                 add_freelist(&longlife_heaps_space, p);
-                freed++;
 	    }
 	    else {
-		live++;    
+		live++;
+		if(do_gc_stats) {
+		    live_counts[BUILTIN_TYPE(p)]++;
+		}
 	    }
 	    p++;
 	}
     }
     longlife_live_objects = live;
-    if (verbose_gc_stats) {
+    if (do_gc_stats) {
 	fprintf(gc_data_file, "longlife objects processed: %.7d\n", live + freed);
 	fprintf(gc_data_file, "longlife live objects     : %.7d\n", live);
 	fprintf(gc_data_file, "longlife freelist objects : %.7d\n", freed - really_freed);
 	fprintf(gc_data_file, "longlife freed objects    : %.7d\n", really_freed);
-/*
 	for(i = 0; i < 256; i++) {
-	    if (free_counts[i] > 0) {
+	    if (free_counts[i] > 0 || live_counts[i] > 0) {
 		fprintf(gc_data_file,
-			"kept %.7d / freed %.7d objects of type %s\n",
+			"kept %.7d / freed %.7d longlife objects of type %s\n",
 			live_counts[i], free_counts[i], obj_type(i));
 	    }
 	}
-*/
     }
 
     mark_source_filename(ruby_sourcefile);
@@ -2704,9 +2717,9 @@ garbage_collect_0(VALUE *top_frame)
 {
     struct gc_list *list;
     struct FRAME * frame;
-    struct timeval gctv1, gctv2;
+    struct rusage ru1, ru2;
     SET_STACK_END;
-
+    
 #ifdef HAVE_NATIVETHREAD
     if (!is_ruby_native_thread()) {
 	rb_bug("cross-thread violation on rb_gc()");
@@ -2721,7 +2734,7 @@ garbage_collect_0(VALUE *top_frame)
 
     if (gc_statistics) {
 	gc_collections++;
-	gettimeofday(&gctv1, NULL);
+	getrusage(RUSAGE_SELF, &ru1);
 	if (verbose_gc_stats) {
 	    fprintf(gc_data_file, "Garbage collection started\n");
 	}
@@ -2857,13 +2870,21 @@ garbage_collect_0(VALUE *top_frame)
     }
 
     if (gc_statistics) {
+	GC_TIME_TYPE musecs_used_user;
+	GC_TIME_TYPE musecs_used_system;
 	GC_TIME_TYPE musecs_used;
-	gettimeofday(&gctv2, NULL);
-	musecs_used = ((GC_TIME_TYPE)(gctv2.tv_sec - gctv1.tv_sec) * 1000000) + (gctv2.tv_usec - gctv1.tv_usec);
+	getrusage(RUSAGE_SELF, &ru2);
+	musecs_used_user = 
+	    (ru2.ru_utime.tv_sec -  ru1.ru_utime.tv_sec) * 1000000 + 
+	    (ru2.ru_utime.tv_usec - ru1.ru_utime.tv_usec);
+	musecs_used_system = 
+	    (ru2.ru_stime.tv_sec -  ru1.ru_stime.tv_sec) * 1000000 + 
+	    (ru2.ru_stime.tv_usec - ru1.ru_stime.tv_usec);
+	musecs_used = musecs_used_user + musecs_used_system;
 	gc_time += musecs_used;
 
 	if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "GC time: %d msec\n", musecs_used / 1000);
+	    fprintf(gc_data_file, "GC time: %d usec (user: %d, system: %d)\n", musecs_used, musecs_used_user, musecs_used_system);
 	}
     }
 }
