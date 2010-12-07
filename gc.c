@@ -95,6 +95,7 @@ static void garbage_collect();
 #define LONGLIFE_CYCLE_DEFAULT_DELAY 128
 #define LONGLIFE_CYCLE_DELAY_FACTOR 2
 #define LONGLIFE_CYCLE_MAX_DELAY 1024
+static int longlife_disabled = Qfalse;
 static int longlife_initial_delay = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
 static int longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
 static int longlife_max_delay = LONGLIFE_CYCLE_DEFAULT_DELAY;
@@ -840,8 +841,8 @@ static void set_gc_parameters()
 {
     char *gc_stats_ptr, *min_slots_ptr, *free_min_ptr, *heap_slots_incr_ptr,
          *heap_incr_ptr, *malloc_limit_ptr, *gc_heap_file_ptr,
-         *heap_slots_growth_factor_ptr, *longlife_max_delay_ptr,
-         *longlife_initial_delay_ptr;
+         *heap_slots_growth_factor_ptr, *longlife_disabled_ptr,
+         *longlife_max_delay_ptr, *longlife_initial_delay_ptr;
 
     gc_data_file = stderr;
 
@@ -931,6 +932,17 @@ static void set_gc_parameters()
 	}
 	if (malloc_limit_i > 0) {
 	    malloc_limit = malloc_limit_i;
+	}
+    }
+
+    longlife_disabled_ptr = getenv("RUBY_GC_LONGLIFE_DISABLE");
+    if (longlife_disabled_ptr != NULL) {
+	int longlife_disabled_i = atol(longlife_disabled_ptr);
+        if (verbose_gc_stats) {
+	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_DISABLE=%s\n", longlife_disabled_ptr);
+	}
+	if (longlife_disabled_i != 0) {
+	    longlife_disabled = Qtrue;
 	}
     }
 
@@ -1128,6 +1140,9 @@ VALUE
 rb_newobj_longlife()
 {
     VALUE obj;
+
+    if (longlife_disabled == Qtrue)
+        return rb_newobj();
 
     if (during_gc)
 	rb_bug("object allocation during garbage collection phase");
@@ -2675,7 +2690,6 @@ rb_gc_mark_remembered_set()
 
             if (heaps[i].lifetime == lifetime_longlife) {
                 p = heaps[i].slot; pend = p + heaps[i].limit;
-                struct heaps_slot* heap = heaps+i;
                 for (;p < pend; p++) {
 	            if(p->as.basic.flags) {
 		        add_children_to_remembered_set(p);
@@ -3131,9 +3145,16 @@ Init_heap()
     if (!rb_gc_stack_start) {
 	Init_stack(0);
     }
-    init_heaps_space(&normal_heaps_space, lifetime_normal);
-    init_heaps_space(&longlife_heaps_space, lifetime_longlife);
+
+    /*
+     * Need to set_gc_parameters() before heap initialization because
+     * of the following logic's dependence on longlife_disabled.
+     */
     set_gc_parameters();
+
+    init_heaps_space(&normal_heaps_space, lifetime_normal);
+    if (longlife_disabled == Qfalse)
+        init_heaps_space(&longlife_heaps_space, lifetime_longlife);
 
     add_heap(&normal_heaps_space);
 }
@@ -3587,7 +3608,6 @@ static VALUE
 os_statistics_work(lifetime_t lt)
 {
     int i, heap_count = 0;
-    int n = 0;
     unsigned int objects = 0;
     unsigned int total_objects_size = 0;
     unsigned int total_heap_size = 0;
