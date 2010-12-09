@@ -2157,11 +2157,11 @@ gc_sweep_for_longlife()
                     obj_free((VALUE)p);
 		    if(do_gc_stats) {
 		        really_freed++;
+		        free_counts[BUILTIN_TYPE(p)]++;
 		    }
                 }
 		if(do_gc_stats) {
 	            freed++;
-		    live_counts[BUILTIN_TYPE(p)]++;
 		}
                 add_freelist(&longlife_heaps_space, p);
 	    }
