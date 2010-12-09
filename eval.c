@@ -6801,8 +6801,8 @@ rb_f_eval(argc, argv, self)
     VALUE self;
 {
     VALUE src, scope, vfile, vline;
-    const char *file = "(eval)";
-    int line = 1;
+    const char *file = NULL;
+    int line = 0;
 
     rb_scan_args(argc, argv, "13", &src, &scope, &vfile, &vline);
     if (ruby_safe_level >= 4) {
