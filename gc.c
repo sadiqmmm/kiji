@@ -96,6 +96,7 @@ static void garbage_collect();
 #define LONGLIFE_CYCLE_DELAY_FACTOR 2
 #define LONGLIFE_CYCLE_MAX_DELAY 1024
 static int longlife_disabled = Qfalse;
+static int longlife_temp_disable = Qfalse;
 static int longlife_initial_delay = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
 static int longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
 static int longlife_max_delay = LONGLIFE_CYCLE_DEFAULT_DELAY;
@@ -1136,12 +1137,24 @@ add_heap_if_needed(heaps_space_t* heaps_space)
     }
 }
 
+void
+rb_temp_enable_longlife()
+{
+  longlife_temp_disable = Qfalse;
+}
+
+void
+rb_temp_disable_longlife()
+{
+  longlife_temp_disable = Qtrue;
+}
+
 VALUE
 rb_newobj_longlife()
 {
     VALUE obj;
 
-    if (longlife_disabled == Qtrue)
+    if (longlife_disabled == Qtrue || longlife_temp_disable == Qtrue)
         return rb_newobj();
 
     if (during_gc)

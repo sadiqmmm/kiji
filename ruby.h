@@ -557,6 +557,9 @@ void rb_global_variable _((VALUE*));
 void rb_gc_register_address _((VALUE*));
 void rb_gc_unregister_address _((VALUE*));
 
+void rb_temp_enable_longlife();
+void rb_temp_disable_longlife();
+
 int rb_gc_is_thread_marked _((VALUE));
 
 ID rb_intern _((const char*));

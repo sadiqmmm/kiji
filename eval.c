@@ -7012,7 +7012,9 @@ rb_obj_instance_eval(argc, argv, self)
     VALUE *argv;
     VALUE self;
 {
-    VALUE klass;
+    VALUE klass, result;
+
+    rb_temp_disable_longlife();
 
     if (SPECIAL_CONST_P(self)) {
 	klass = Qnil;
@@ -7020,7 +7022,11 @@ rb_obj_instance_eval(argc, argv, self)
     else {
 	klass = rb_singleton_class(self);
     }
-    return specific_eval(argc, argv, klass, self);
+    result = specific_eval(argc, argv, klass, self);
+
+    rb_temp_enable_longlife();
+
+    return result;
 }
 
 /*
