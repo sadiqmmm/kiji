@@ -4608,7 +4608,7 @@ rb_node_newnode_longlife(type, a0, a1, a2)
     enum node_type type;
     VALUE a0, a1, a2;
 {
-    NODE *n = (NODE*) rb_newobj_longlife();
+    NODE *n = (NODE*) rb_newobj_longlife((int)type);
 
     n->flags |= T_NODE;
     nd_set_type(n, type);

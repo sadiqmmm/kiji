@@ -305,7 +305,7 @@ char *rb_str2cstr _((VALUE,long*));
 #define CHR2FIX(x) INT2FIX((long)((x)&0xff))
 
 VALUE rb_newobj _((void));
-VALUE rb_newobj_longlife _((void));
+VALUE rb_newobj_longlife _((int));
 
 #define NEWOBJ(obj,type) type *obj = (type*)rb_newobj()
 #define OBJSETUP(obj,c,t) do {\

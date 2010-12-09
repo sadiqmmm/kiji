@@ -1137,7 +1137,7 @@ add_heap_if_needed(heaps_space_t* heaps_space)
 }
 
 VALUE
-rb_newobj_longlife()
+rb_newobj_longlife(int type)
 {
     VALUE obj;
 
@@ -1155,6 +1155,18 @@ rb_newobj_longlife()
         longlife_allocation_since_last_gc = 1;
         // Reset the exponential backoff cycle
         longlife_gc_after_gc_cycles = longlife_initial_delay;
+        if(verbose_gc_stats) {
+	    ruby_set_current_source();
+	    if (!ruby_sourcefile) {
+		fprintf(gc_data_file, "New longlife allocation. Type: %d\n", type);
+	    }
+	    else if (ruby_sourceline == 0) {
+		fprintf(gc_data_file, "New longlife allocation in %s. Type: %d\n", ruby_sourcefile, type);
+	    }
+	    else {
+		fprintf(gc_data_file, "New longlife allocation in %s:%d. Type: %d\n", ruby_sourcefile, ruby_sourceline, type);
+	    }
+        }
     }
     longlife_live_objects++;
     if(longlife_live_objects > longlife_max_live_objects) {
