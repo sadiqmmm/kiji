@@ -6801,8 +6801,8 @@ rb_f_eval(argc, argv, self)
     VALUE self;
 {
     VALUE src, scope, vfile, vline;
-    const char *file = "(eval)";
-    int line = 1;
+    const char *file = NULL;
+    int line = 0;
 
     rb_scan_args(argc, argv, "13", &src, &scope, &vfile, &vline);
     if (ruby_safe_level >= 4) {
@@ -7012,7 +7012,9 @@ rb_obj_instance_eval(argc, argv, self)
     VALUE *argv;
     VALUE self;
 {
-    VALUE klass;
+    VALUE klass, result;
+
+    rb_temp_disable_longlife();
 
     if (SPECIAL_CONST_P(self)) {
 	klass = Qnil;
@@ -7020,7 +7022,11 @@ rb_obj_instance_eval(argc, argv, self)
     else {
 	klass = rb_singleton_class(self);
     }
-    return specific_eval(argc, argv, klass, self);
+    result = specific_eval(argc, argv, klass, self);
+
+    rb_temp_enable_longlife();
+
+    return result;
 }
 
 /*
