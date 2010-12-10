@@ -1137,16 +1137,20 @@ add_heap_if_needed(heaps_space_t* heaps_space)
     }
 }
 
-void
+VALUE
 rb_temp_enable_longlife()
 {
+  int old = longlife_temp_disable;
   longlife_temp_disable = Qfalse;
+  return old; 
 }
 
-void
+VALUE
 rb_temp_disable_longlife()
 {
+  int old = longlife_temp_disable;
   longlife_temp_disable = Qtrue;
+  return old; 
 }
 
 VALUE
@@ -3910,6 +3914,9 @@ Init_GC()
     rb_define_singleton_method(rb_mGC, "time", rb_gc_time, 0);
     rb_define_singleton_method(rb_mGC, "dump", rb_gc_dump, 0);
     rb_define_singleton_method(rb_mGC, "log", rb_gc_log, 1);
+
+    rb_define_singleton_method(rb_mGC, "disable_longlife", rb_temp_disable_longlife, 0);
+    rb_define_singleton_method(rb_mGC, "enable_longlife", rb_temp_enable_longlife, 0);
 
     rb_mObSpace = rb_define_module("ObjectSpace");
     rb_define_module_function(rb_mObSpace, "each_object", os_each_obj, -1);
