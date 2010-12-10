@@ -3911,6 +3911,9 @@ Init_GC()
     rb_define_singleton_method(rb_mGC, "dump", rb_gc_dump, 0);
     rb_define_singleton_method(rb_mGC, "log", rb_gc_log, 1);
 
+    rb_define_singleton_method(rb_mGC, "disable_longlife", rb_temp_disable_longlife, 0);
+    rb_define_singleton_method(rb_mGC, "enable_longlife", rb_temp_enable_longlife, 0);
+
     rb_mObSpace = rb_define_module("ObjectSpace");
     rb_define_module_function(rb_mObSpace, "each_object", os_each_obj, -1);
     rb_define_module_function(rb_mObSpace, "garbage_collect", rb_gc_start, 0);
