@@ -1177,7 +1177,7 @@ rb_newobj_longlife(int type)
 	    if (!ruby_sourcefile) {
 		fprintf(gc_data_file, "New longlife allocation. Type: %d\n", type);
 	    }
-	    else if (ruby_sourceline == 0) {
+	    else if (!ruby_sourceline) {
 		fprintf(gc_data_file, "New longlife allocation in %s. Type: %d\n", ruby_sourcefile, type);
 	    }
 	    else {
