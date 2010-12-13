@@ -183,8 +183,8 @@ static VALUE gc_setlimit(VALUE mod, VALUE newLimit)
   malloc_limit = limit;
   return newLimit;
  }
- 
- 
+
+
 /*
  *  call-seq:
  *     GC.growth
@@ -289,7 +289,7 @@ ruby_xmalloc(size)
 	    rb_memerror();
 	}
     }
-    
+
     if (gc_statistics) {
 	gc_allocated_size += size;
 	gc_num_allocations += 1;
@@ -376,7 +376,7 @@ static st_table *finalizer_table = 0;
 /* Compound structure, containing debugging options. */
 static struct {
     FILE *terminal;
-    
+
     /* Whether to allocate Ruby heaps by mmapping a file. This makes it easier to see how many
      * bytes in heaps have been made dirty, using memory analysis tools.
      */
@@ -386,15 +386,15 @@ static struct {
      * Can be used to check how many pages are made dirty by the garbage collector.
      */
     int prompt_before_gc;
-    
+
     /* Whether to ask the user to press Enter before the sweep phase of the garbage
      * collector starts. */
     int prompt_before_sweep;
-    
+
     /* Whether to ask the user to press Enter after the sweep phase of the garbage
      * collector starts. */
     int prompt_after_sweep;
-    
+
     int print_sweeped_objects;
 } debug_options;
 
@@ -427,7 +427,7 @@ static void
 debug_print(const char *message, ...)
 {
     va_list ap;
-    
+
     va_start(ap, message);
     if (debug_options.terminal != NULL) {
 	vfprintf(debug_options.terminal, message, ap);
@@ -618,7 +618,7 @@ rb_gc_clear_stats()
     gc_time = 0;
     gc_allocated_size = 0;
     gc_num_allocations = 0;
-    return Qnil; 
+    return Qnil;
 }
 
 /*
@@ -1091,7 +1091,7 @@ add_heap(heaps_space_t *heaps_space)
 
 #define RANY(o) ((RVALUE*)(o))
 
-int 
+int
 rb_during_gc()
 {
     return during_gc;
@@ -1142,7 +1142,7 @@ rb_temp_enable_longlife()
 {
   int old = longlife_temp_disable;
   longlife_temp_disable = Qfalse;
-  return old; 
+  return old;
 }
 
 VALUE
@@ -1150,7 +1150,7 @@ rb_temp_disable_longlife()
 {
   int old = longlife_temp_disable;
   longlife_temp_disable = Qtrue;
-  return old; 
+  return old;
 }
 
 VALUE
@@ -1359,7 +1359,7 @@ push_mark_stack(VALUE ptr)
 	    mark_stack_overflow = 1;
     }
 }
-    
+
 static st_table *source_filenames;
 
 char *
@@ -1436,7 +1436,7 @@ gc_mark_rest()
     VALUE tmp_arry[MARK_STACK_MAX];
 #endif
     VALUE *p = tmp_arry + stackLen;
-    
+
     MEMCPY(tmp_arry, mark_stack, VALUE, stackLen);
 
     init_mark_stack();
@@ -1454,7 +1454,7 @@ is_pointer_to_heap(ptr)
 
     /* check if p looks like a pointer */
     heap = heaps+heaps_used;
-    while (--heap >= heaps) 
+    while (--heap >= heaps)
       if (p >= heap->slot && p < heap->slot + heap->limit)
         return Qtrue;
     return Qfalse;
@@ -1471,7 +1471,7 @@ is_pointer_to_longlife_heap(ptr)
 
     /* check if p looks like a pointer */
     heap = heaps+heaps_used;
-    while (--heap >= heaps) 
+    while (--heap >= heaps)
       if (p >= heap->slot && p < heap->slot + heap->limit && heap->lifetime == lifetime_longlife)
         return Qtrue;
     return Qfalse;
@@ -1590,7 +1590,7 @@ rb_gc_mark(ptr)
 {
     RVALUE *obj = RANY(ptr);
     SET_STACK_END;
-    
+
     if (rb_special_const_p(ptr)) return; /* special const not marked */
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (rb_mark_table_contains(obj)) return;  /* already marked */
@@ -1861,7 +1861,7 @@ static int obj_free _((VALUE));
 
 static inline void
 add_freelist(heaps_space_t* heaps_space, RVALUE *p)
-{           
+{
     /* Do not touch the fields if they don't have to be modified.
      * This is in order to preserve copy-on-write semantics.
      */
@@ -1871,9 +1871,9 @@ add_freelist(heaps_space_t* heaps_space, RVALUE *p)
 	push_freelist(heaps_space, p);
     }
 }
-            
+
 static void add_to_correct_freelist(RVALUE *p)
-{   
+{
     int has_longlife_flag = FL_TEST(p, FL_LONGLIFE);
     // Has explicit longlife flag
     if(has_longlife_flag) {
@@ -1882,12 +1882,12 @@ static void add_to_correct_freelist(RVALUE *p)
     // Has some flags (so they weren't cleared), but not longlife
     else if(p->as.free.flags != 0 && !has_longlife_flag) {
 	add_freelist(&normal_heaps_space, p);
-    }    
+    }
     // If all else fails, use slower is_pointer_to_longlife_heap()
     else {
         add_freelist(is_pointer_to_longlife_heap(p) ? &longlife_heaps_space : &normal_heaps_space, p);
     }
-}       
+}
 
 static void
 finalize_list(p)
@@ -1911,7 +1911,7 @@ finalize_list(p)
 static char* obj_type(int tp)
 {
     switch (tp) {
-	case T_NIL    : return "NIL";   
+	case T_NIL    : return "NIL";
 	case T_OBJECT : return "OBJECT";
 	case T_CLASS  : return "CLASS";
 	case T_ICLASS : return "ICLASS";
@@ -1925,13 +1925,13 @@ static char* obj_type(int tp)
 	case T_STRUCT : return "STRUCT";
 	case T_BIGNUM : return "BIGNUM";
 	case T_FILE   : return "FILE";
-	    
+
 	case T_TRUE   : return "TRUE";
 	case T_FALSE  : return "FALSE";
 	case T_DATA   : return "DATA";
 	case T_MATCH  : return "MATCH";
 	case T_SYMBOL : return "SYMBOL";
-	    
+
 	case T_BLKTAG : return "BLKTAG";
 	case T_UNDEF  : return "UNDEF";
 	case T_VARMAP : return "VARMAP";
@@ -2094,7 +2094,7 @@ gc_sweep()
 	add_heap(&normal_heaps_space);
     }
     during_gc = 0;
-    
+
     if (do_gc_stats) {
 	fprintf(gc_data_file, "objects processed: %.7lu\n", live_objects+freed);
 	fprintf(gc_data_file, "live objects	: %.7lu\n", live_objects);
@@ -2650,7 +2650,7 @@ add_children_to_remembered_set(ptr)
 	}
 	break;
 
-      case T_DATA: 
+      case T_DATA:
 	rb_bug("add_children_to_remembered_set() encountered T_DATA 0x%lx", obj);
 	break;
 
@@ -2731,11 +2731,11 @@ rb_gc_mark_remembered_set()
         fprintf(gc_data_file, "Not re-marking remembered set\n");
     }
     rem = remembered_set_ptr;
-    while (rem) {  
+    while (rem) {
         rb_gc_mark((VALUE)rem->obj);
         rem = rem->next;
     }
-}                                                     
+}
 
 static void
 clear_mark_longlife_heaps()
@@ -2762,7 +2762,7 @@ garbage_collect_0(VALUE *top_frame)
     struct FRAME * frame;
     struct rusage ru1, ru2;
     SET_STACK_END;
-    
+
 #ifdef HAVE_NATIVETHREAD
     if (!is_ruby_native_thread()) {
 	rb_bug("cross-thread violation on rb_gc()");
@@ -2794,7 +2794,7 @@ garbage_collect_0(VALUE *top_frame)
 	}
 	longlife_collection = Qtrue;
 	// Only extend the interval if we actually completed the previous interval
-	// without intermittent longlife GC caused by different trigger. 
+	// without intermittent longlife GC caused by different trigger.
         longlife_gc_after_gc_cycles *= LONGLIFE_CYCLE_DELAY_FACTOR;
 	// Never go over maximum specified cycles
 	if(longlife_gc_after_gc_cycles > longlife_max_delay) {
@@ -2826,7 +2826,7 @@ garbage_collect_0(VALUE *top_frame)
 	    }
 	}
     }
-    
+
     if (rb_curr_thread == rb_main_thread) {
 	gc_mark((VALUE)ruby_current_node);
 	gc_mark((VALUE)ruby_scope);
@@ -2900,7 +2900,7 @@ garbage_collect_0(VALUE *top_frame)
 	rb_gc_abort_threads();
     } while (!MARK_STACK_EMPTY);
     if (longlife_collection) {
-        gc_sweep_for_longlife();    
+        gc_sweep_for_longlife();
     }
     gc_sweep();
     rb_mark_table_finalize();
@@ -2909,7 +2909,7 @@ garbage_collect_0(VALUE *top_frame)
       gc_longlife_cycles++;
       longlife_collection = Qfalse;
     } else {
-      gc_cycles++;               
+      gc_cycles++;
     }
 
     if (gc_statistics) {
@@ -2917,11 +2917,11 @@ garbage_collect_0(VALUE *top_frame)
 	GC_TIME_TYPE musecs_used_system;
 	GC_TIME_TYPE musecs_used;
 	getrusage(RUSAGE_SELF, &ru2);
-	musecs_used_user = 
-	    (ru2.ru_utime.tv_sec -  ru1.ru_utime.tv_sec) * 1000000 + 
+	musecs_used_user =
+	    (ru2.ru_utime.tv_sec -  ru1.ru_utime.tv_sec) * 1000000 +
 	    (ru2.ru_utime.tv_usec - ru1.ru_utime.tv_usec);
-	musecs_used_system = 
-	    (ru2.ru_stime.tv_sec -  ru1.ru_stime.tv_sec) * 1000000 + 
+	musecs_used_system =
+	    (ru2.ru_stime.tv_sec -  ru1.ru_stime.tv_sec) * 1000000 +
 	    (ru2.ru_stime.tv_usec - ru1.ru_stime.tv_usec);
 	musecs_used = musecs_used_user + musecs_used_system;
 	gc_time += musecs_used;
@@ -2956,7 +2956,7 @@ garbage_collect()
     if (__stack_past(rb_curr_thread->gc_stack_end, paddedLimit))
       rb_curr_thread->gc_stack_end = paddedLimit;
   }
-  rb_gc_wipe_stack();  /* wipe the whole stack area reserved for this gc */  
+  rb_gc_wipe_stack();  /* wipe the whole stack area reserved for this gc */
 # endif
 #else
   garbage_collect_0(top);
@@ -3687,7 +3687,7 @@ os_statistics_work(lifetime_t lt)
 		}
 		break;
 	    };
-	    
+
 	    if (slot_index % group_size == 0) {
 		if (free_slots_in_current_group == group_size) {
 		    contiguous_free_groups++;
@@ -3697,7 +3697,7 @@ os_statistics_work(lifetime_t lt)
 	    if (p->as.basic.flags == 0) {
 		free_slots_in_current_group++;
 	    }
-	    
+
 	    if (p->as.basic.flags) {
 		int isAST = 0;
 		switch (TYPE(p)) {
@@ -3904,7 +3904,7 @@ Init_GC()
     rb_define_singleton_method(rb_mGC, "initialize_debugging", rb_gc_init_debugging, 0);
     rb_define_singleton_method(rb_mGC, "copy_on_write_friendly?", rb_gc_copy_on_write_friendly, 0);
     rb_define_singleton_method(rb_mGC, "copy_on_write_friendly=", rb_gc_set_copy_on_write_friendly, 1);
-    
+
     rb_define_singleton_method(rb_mGC, "enable_stats", rb_gc_enable_stats, 0);
     rb_define_singleton_method(rb_mGC, "disable_stats", rb_gc_disable_stats, 0);
     rb_define_singleton_method(rb_mGC, "clear_stats", rb_gc_clear_stats, 0);
