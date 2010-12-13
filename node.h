@@ -239,6 +239,8 @@ extern NODE *ruby_top_cref;
 #define NEW_DEFN(i,a,d,p) NEW_NODE(NODE_DEFN,p,i,NEW_RFUNC(a,d))
 #define NEW_DEFS(r,i,a,d) NEW_NODE(NODE_DEFS,r,i,NEW_RFUNC(a,d))
 #define NEW_CFUNC(f,c) NEW_NODE(NODE_CFUNC,f,c,0)
+/* IFUNC nodes are created whenever an enumeration runs; see rb_iterate(). For
+   this reason, they're allocated in ordinary heap. */
 #define NEW_IFUNC(f,c) NEW_NODE_SHORTLIFE(NODE_IFUNC,f,c,0)
 #define NEW_RFUNC(b1,b2) NEW_SCOPE(block_append(b1,b2))
 #define NEW_SCOPE(b) NEW_NODE(NODE_SCOPE,local_tbl(),0,(b))
