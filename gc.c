@@ -2755,6 +2755,15 @@ clear_mark_longlife_heaps()
     }
 }
 
+static GC_TIME_TYPE microseconds(struct timeval t) {
+    return t.tv_sec * 1000000 + t.tv_usec;
+}
+
+static GC_TIME_TYPE timediff_microseconds(struct timeval later, struct timeval earlier) {
+    GC_TIME_TYPE diff = microseconds(later) - microseconds(earlier);
+    return diff > 0 ? diff : 0;
+}
+
 static void
 garbage_collect_0(VALUE *top_frame)
 {
@@ -2917,12 +2926,8 @@ garbage_collect_0(VALUE *top_frame)
 	GC_TIME_TYPE musecs_used_system;
 	GC_TIME_TYPE musecs_used;
 	getrusage(RUSAGE_SELF, &ru2);
-	musecs_used_user =
-	    (ru2.ru_utime.tv_sec -  ru1.ru_utime.tv_sec) * 1000000 +
-	    (ru2.ru_utime.tv_usec - ru1.ru_utime.tv_usec);
-	musecs_used_system =
-	    (ru2.ru_stime.tv_sec -  ru1.ru_stime.tv_sec) * 1000000 +
-	    (ru2.ru_stime.tv_usec - ru1.ru_stime.tv_usec);
+	musecs_used_user = timediff_microseconds(ru2.ru_utime, ru1.ru_utime);
+	musecs_used_system = timediff_microseconds(ru2.ru_stime, ru1.ru_stime);
 	musecs_used = musecs_used_user + musecs_used_system;
 	gc_time += musecs_used;
 
