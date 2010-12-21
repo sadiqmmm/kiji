@@ -28,7 +28,7 @@ const char *ruby_copyright;
 
 #define REE_VERSION "2010.02"
 
-#define KIJI_VERSION "0.7"
+#define KIJI_VERSION "0.8"
 const char ruby_kiji_version[] = KIJI_VERSION;
 
 void
