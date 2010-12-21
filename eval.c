@@ -12527,7 +12527,8 @@ rb_thread_alloc(klass)
 
       if (stack_area == MAP_FAILED) {
 	rb_memerror();
-	fprintf(stderr, "Thread stack allocation failed %d!\n", getpid()      }
+	fprintf(stderr, "Thread stack allocation failed %d!\n", getpid());
+      }
 
       th->stk_ptr = th->stk_pos = stack_area;
       th->stk_size = total_size;
