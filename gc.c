@@ -242,9 +242,14 @@ unsigned long rb_os_allocated_objects()
 { return allocated_objects; }
 #endif
 
+static int during_gc;
+
 void
 rb_memerror()
 {
+    // If we throw a NoMemoryError, we're no longer doing GC
+    during_gc = 0;
+
     rb_thread_t th = rb_curr_thread;
 
     if (!nomem_error ||
@@ -364,7 +369,6 @@ extern int ruby_in_compile;
 static int dont_gc;
 static GC_TIME_TYPE gc_time = 0;
 static int gc_collections = 0;
-static int during_gc;
 static int need_call_final = 0;
 static st_table *finalizer_table = 0;
 
