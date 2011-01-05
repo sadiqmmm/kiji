@@ -242,11 +242,13 @@ unsigned long rb_os_allocated_objects()
 { return allocated_objects; }
 #endif
 
+static int during_gc;
+
 void
 rb_memerror()
 {
     rb_thread_t th = rb_curr_thread;
-
+    during_gc = 0;
     if (!nomem_error ||
 	(rb_thread_raised_p(th, RAISED_NOMEMORY) && rb_safe_level() < 4)) {
 	fprintf(stderr, "[FATAL] failed to allocate memory\n");
@@ -364,7 +366,6 @@ extern int ruby_in_compile;
 static int dont_gc;
 static GC_TIME_TYPE gc_time = 0;
 static int gc_collections = 0;
-static int during_gc;
 static int need_call_final = 0;
 static st_table *finalizer_table = 0;
 
