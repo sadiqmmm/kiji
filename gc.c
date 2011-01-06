@@ -247,9 +247,15 @@ static int during_gc;
 void
 rb_memerror()
 {
-    // If we throw a NoMemoryError, we're no longer doing GC
+    // If we throw a NoMemoryError, we're no longer doing GC. This will allow
+    // further allocations to occur in the handler for this error. Normally, 
+    // it goes unhandled and terminates the VM, but even in that case, 
+    // rb_write_error2() will create one new string as part of printing the 
+    // error message to stderr. Allowing allocations in NoMemoryError handler
+    // is okay -- by that time some or all of the stack frames were unwound, 
+    // so some memory can be realistically allocated again; even a GC can
+    // succeed.
     during_gc = 0;
-
     rb_thread_t th = rb_curr_thread;
 
     if (!nomem_error ||
