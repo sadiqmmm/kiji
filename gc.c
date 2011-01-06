@@ -249,7 +249,6 @@ rb_memerror()
 {
     // If we throw a NoMemoryError, we're no longer doing GC
     during_gc = 0;
-
     rb_thread_t th = rb_curr_thread;
 
     if (!nomem_error ||
