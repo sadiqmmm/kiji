@@ -4742,7 +4742,7 @@ rb_longjmp(tag, mesg)
     ruby_set_current_source();
     if (ruby_sourcefile && !NIL_P(mesg)) {
 	at = get_backtrace(mesg);
-	if (NIL_P(at)) {
+	if (NIL_P(at) && !rb_thread_raised_p(th, RAISED_NOMEMORY)) {
 	    at = make_backtrace();
 	    if (OBJ_FROZEN(mesg)) {
 		mesg = rb_obj_dup(mesg);
