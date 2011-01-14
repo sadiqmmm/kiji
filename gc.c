@@ -3190,8 +3190,12 @@ void ruby_init_stack(VALUE *addr
 static void init_heaps_space(heaps_space_t* heaps_space, enum lifetime lifetime)
 {
     heaps_space->lifetime = lifetime;
-    heaps_space->heap_slots = 10000;
-    heaps_space->heap_slots_increment = 10000;
+    if(heaps_space->heap_slots == 0) {
+	heaps_space->heap_slots = 10000;
+    }
+    if(heaps_space->heap_slots_increment == 0) {
+	heaps_space->heap_slots_increment = 10000;
+    }
 }
 /*
  * Document-class: ObjectSpace
