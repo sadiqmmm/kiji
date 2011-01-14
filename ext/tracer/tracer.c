@@ -96,13 +96,8 @@ tracer_dump(VALUE self, VALUE _logfile)
 
   if (rb_tracing_enabled_p()) {
     object_stats_t stats = (object_stats_t)*rb_object_stats();
-    FILE *logfile = fopen(StringValueCStr(_logfile), "r");
+    FILE *logfile = fopen(StringValueCStr(_logfile), "w");
 
-    if (logfile != NULL) {
-      fclose(logfile);
-    }
-
-    logfile = fopen(StringValueCStr(_logfile), "w");
     if (logfile == NULL) {
       rb_raise(rb_eRuntimeError, "couldn't open trace file");
     }
