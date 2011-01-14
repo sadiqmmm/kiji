@@ -299,7 +299,7 @@ rb_memerror()
     // succeed.
     during_gc = 0;
     rb_thread_t th = rb_curr_thread;
-
+    during_gc = 0;
     if (!nomem_error ||
 	(rb_thread_raised_p(th, RAISED_NOMEMORY) && rb_safe_level() < 4)) {
 	fprintf(stderr, "[FATAL] failed to allocate memory\n");
