@@ -107,11 +107,18 @@ static int gc_cycles_since_last_longlife_gc = 0;
 
 static int rb_tracer_enabled;
 static object_stats_t stats;
+static st_table* line_stats;
 
 object_stats_t*
 rb_object_stats()
 {
   return (object_stats_t*)&stats;
+}
+
+void*
+rb_line_stats()
+{
+  return line_stats;
 }
 
 void
@@ -120,18 +127,33 @@ rb_register_newobj(int t)
   if (rb_tracer_enabled) {
     stats.newobj_calls++;
     stats.types[t]++;
+
+    char *key = ruby_sourcefile;
+    st_data_t value;
+
+    if (!st_lookup(line_stats, (st_data_t)key, &value)) {
+      st_insert(line_stats, (st_data_t)key, 1);
+    } else {
+      st_insert(line_stats, (st_data_t)key, (st_data_t)(value + 1));
+    }
   }
 }
 
 void
 rb_enable_tracing()
 {
+  line_stats = st_init_strtable();
+
   rb_tracer_enabled = 1;
 }
 
 void
 rb_disable_tracing()
 {
+  if (line_stats) {
+    st_free_table(line_stats);
+  }
+
   rb_tracer_enabled = 0;
 }
 
@@ -144,6 +166,11 @@ rb_tracing_enabled_p()
 void
 rb_reset_tracing()
 {
+  if (line_stats) {
+    st_free_table(line_stats);
+    line_stats = st_init_strtable();
+  }
+
   memset(&stats, 0, sizeof(object_stats_t));
 }
 

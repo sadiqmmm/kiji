@@ -806,6 +806,7 @@ typedef struct object_stats {
 } object_stats_t;
 
 object_stats_t* rb_object_stats();
+void* rb_line_stats();
 void rb_enable_tracing();
 void rb_disable_tracing();
 int rb_tracing_enabled_p();

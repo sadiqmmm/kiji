@@ -1,4 +1,5 @@
 #include "ruby.h"
+#include "st.h"
 
 static VALUE Tracer;
 
@@ -87,6 +88,13 @@ tracer_reset()
   return Qnil;
 }
 
+int
+print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
+{
+  fprintf((FILE*)logfile, "rb_newobj count for %s: %i\n", (char*)key, (int)value);
+  return 0;
+}
+
 VALUE
 tracer_dump(VALUE self, VALUE _logfile)
 {
@@ -109,6 +117,8 @@ tracer_dump(VALUE self, VALUE _logfile)
         fprintf(logfile, "%s count: %i\n", type_string(i), stats.types[i]);
       }
     }
+
+    st_foreach((st_table*)rb_line_stats(), print_line_stats, (st_data_t)logfile);
 
     fprintf(logfile, "\n");
     fclose(logfile);
