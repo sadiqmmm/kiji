@@ -90,23 +90,25 @@ tracer_reset()
 VALUE
 tracer_dump(VALUE self, VALUE _logfile)
 {
+  int i;
+
   Check_Type(_logfile, T_STRING);
 
   if (rb_tracing_enabled_p()) {
     object_stats_t stats = (object_stats_t)*rb_object_stats();
     FILE *logfile = fopen(StringValueCStr(_logfile), "r");
-    
+
     if (logfile != NULL) {
       fclose(logfile);
     }
 
-    if ((logfile = fopen(StringValueCStr(_logfile), "w")) == NULL) {
+    logfile = fopen(StringValueCStr(_logfile), "w");
+    if (logfile == NULL) {
       rb_raise(rb_eRuntimeError, "couldn't open trace file");
     }
 
     fprintf(logfile, "rb_newobj count: %i\n", stats.newobj_calls);
 
-    int i;
     for (i = 0; i < T_MASK + 1; i++) {
       if (stats.types[i] > 0) {
         fprintf(logfile, "%s count: %i\n", type_string(i), stats.types[i]);

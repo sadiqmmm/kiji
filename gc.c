@@ -105,7 +105,7 @@ static int longlife_heaps_used = 0;
 static int longlife_collection = Qfalse;
 static int gc_cycles_since_last_longlife_gc = 0;
 
-static int rb_tracer_enabled = 0;
+static int rb_tracer_enabled;
 static object_stats_t stats;
 
 object_stats_t*
