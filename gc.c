@@ -880,6 +880,7 @@ typedef struct remembered_set {
 
 static remembered_set_t *remembered_set_ptr; // [ASz] remembered_set_ptr
 static remembered_set_t *remembered_set_freed; // [ASz] remembered_set_freed
+static unsigned int remembered_set_recalculations;
 
 static RVALUE *himem, *lomem;
 
@@ -2778,6 +2779,7 @@ rb_gc_mark_remembered_set()
                 }
             }
         }
+	++remembered_set_recalculations;
     }
     else if(verbose_gc_stats) {
         fprintf(gc_data_file, "Not re-marking remembered set\n");
@@ -3698,8 +3700,10 @@ os_statistics_work(lifetime_t lt)
     unsigned int total_objects_size = 0;
     unsigned int total_heap_size = 0;
     unsigned int total_heap_slots = 0;
+    unsigned int slots_in_first_heap = 0;
+    unsigned int slots_in_last_heap = 0;
     unsigned int ast_nodes = 0;
-    unsigned int ast_calls = 0, ast_varmap = 0, ast_scope = 0, ast_node = 0, ast_singleton = 0;
+    unsigned int ast_class = 0, ast_varmap = 0, ast_scope = 0, ast_node = 0, ast_singleton = 0;
     char message[1024];
     unsigned int total_leading_free_slots = 0;
     unsigned int total_trailing_free_slots = 0;
@@ -3759,7 +3763,7 @@ os_statistics_work(lifetime_t lt)
 		int isAST = 0;
 		switch (TYPE(p)) {
 		  case T_ICLASS:
-                    ast_calls++;
+                    ast_class++;
 		  case T_VARMAP:
                     ast_varmap++;
 		  case T_SCOPE:
@@ -3790,7 +3794,13 @@ os_statistics_work(lifetime_t lt)
 		}
 	    }
 	}
-	total_heap_size += (void *) pend - heaps[i].membase;
+	unsigned int heap_size = (void *) pend - heaps[i].membase;
+	unsigned int heap_slots = heap_size/sizeof(RVALUE);
+	if(slots_in_first_heap == 0) {
+	    slots_in_first_heap = heap_slots;
+	}
+	slots_in_last_heap = heap_slots;
+	total_heap_size += heap_size;
 	total_leading_free_slots += leading_free_slots;
 	total_trailing_free_slots += trailing_free_slots;
     }
@@ -3800,9 +3810,12 @@ os_statistics_work(lifetime_t lt)
     snprintf(message, sizeof(message),
         "** %s **\n"
         "Number of objects    : %d (%d AST nodes, %.2f%%)\n"
-        "AST types            : call %d, varmap %d, scope %d, node %d, singleton %d\n"
+        "AST types            : class %d, varmap %d, scope %d, node %d, singleton %d\n"
         "Heap slot size       : %d\n"
+        "Slots in first heap  : %d\n"
+        "Slots in last heap   : %d\n"
         "GC cycles so far     : %d\n"
+        "Remembered set recalc: %d\n"
         "Number of heaps      : %d\n"
         "Total size of objects: %.2f KB\n"
         "Total size of heaps  : %.2f KB (%.2f KB = %.2f%% unused)\n"
@@ -3812,9 +3825,12 @@ os_statistics_work(lifetime_t lt)
         "Number of terminal objects: %d (%.2f%%)\n",
         lifetime_name[lt],
         objects, ast_nodes, ast_nodes * 100 / (double) objects,
-        ast_calls, ast_varmap, ast_scope, ast_node, ast_singleton,
+        ast_class, ast_varmap, ast_scope, ast_node, ast_singleton,
         sizeof(RVALUE),
+        slots_in_first_heap,
+        slots_in_last_heap,
         (lt == lifetime_normal) ? gc_cycles : gc_longlife_cycles,
+        remembered_set_recalculations,
         heap_count,
         total_objects_size / 1024.0,
         total_heap_size / 1024.0,
