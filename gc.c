@@ -128,9 +128,10 @@ rb_register_newobj(int t)
     stats.newobj_calls++;
     stats.types[t]++;
 
-    char *key = ruby_sourcefile;
+    char *key = malloc(strlen(ruby_sourcefile) + 12);
     st_data_t value;
 
+    snprintf(key, 1024, "%s:%i", ruby_sourcefile, ruby_sourceline);
     if (!st_lookup(line_stats, (st_data_t)key, &value)) {
       st_insert(line_stats, (st_data_t)key, 1);
     } else {
@@ -163,10 +164,18 @@ rb_tracing_enabled_p()
   return rb_tracer_enabled;
 }
 
+int
+rb_free_tracing_keys(st_data_t key, st_data_t value)
+{
+  free((char *)key);
+  return 0;
+}
+
 void
 rb_reset_tracing()
 {
   if (line_stats) {
+    st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)0);
     st_free_table(line_stats);
     line_stats = st_init_strtable();
   }
