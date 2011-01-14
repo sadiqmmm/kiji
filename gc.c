@@ -105,6 +105,48 @@ static int longlife_heaps_used = 0;
 static int longlife_collection = Qfalse;
 static int gc_cycles_since_last_longlife_gc = 0;
 
+static int rb_tracer_enabled;
+static object_stats_t stats;
+
+object_stats_t*
+rb_object_stats()
+{
+  return (object_stats_t*)&stats;
+}
+
+void
+rb_register_newobj(int t)
+{
+  if (rb_tracer_enabled) {
+    stats.newobj_calls++;
+    stats.types[t]++;
+  }
+}
+
+void
+rb_enable_tracing()
+{
+  rb_tracer_enabled = 1;
+}
+
+void
+rb_disable_tracing()
+{
+  rb_tracer_enabled = 0;
+}
+
+int
+rb_tracing_enabled_p()
+{
+  return rb_tracer_enabled;
+}
+
+void
+rb_reset_tracing()
+{
+  memset(&stats, 0, sizeof(object_stats_t));
+}
+
 /*
  *  call-seq:
  *    GC.stress                 => true or false

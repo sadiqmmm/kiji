@@ -306,9 +306,11 @@ char *rb_str2cstr _((VALUE,long*));
 
 VALUE rb_newobj _((void));
 VALUE rb_newobj_longlife _((int));
+void rb_register_newobj _((int));
 
 #define NEWOBJ(obj,type) type *obj = (type*)rb_newobj()
 #define OBJSETUP(obj,c,t) do {\
+    rb_register_newobj(t);\
     RBASIC(obj)->flags = (t);\
     RBASIC(obj)->klass = (c);\
     if (rb_safe_level() >= 3) FL_SET(obj, FL_TAINT);\
@@ -797,5 +799,15 @@ void ruby_native_thread_kill _((int));
 #endif
 }  /* extern "C" { */
 #endif
+
+typedef struct object_stats {
+  int newobj_calls;
+  int types[T_MASK+1];
+} object_stats_t;
+
+object_stats_t* rb_object_stats();
+void rb_enable_tracing();
+void rb_disable_tracing();
+int rb_tracing_enabled_p();
 
 #endif /* ifndef RUBY_H */
