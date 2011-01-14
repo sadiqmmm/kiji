@@ -1,7 +1,7 @@
 #include "ruby.h"
 #include "st.h"
 
-static VALUE Tracer;
+static VALUE Trace;
 
 VALUE
 tracer_enabled_p()
@@ -129,12 +129,12 @@ tracer_dump(VALUE self, VALUE _logfile)
 }
 
 void
-Init_tracer()
+Init_trace()
 {
-  Tracer = rb_define_module("Tracer");
-  rb_define_singleton_method(Tracer, "enabled?", tracer_enabled_p, 0);
-  rb_define_singleton_method(Tracer, "dump", tracer_dump, 1);
-  rb_define_singleton_method(Tracer, "start", tracer_start, 0);
-  rb_define_singleton_method(Tracer, "stop", tracer_stop, 0);
-  rb_define_singleton_method(Tracer, "reset", tracer_reset, 0);
+  Trace = rb_define_module("Trace");
+  rb_define_singleton_method(Trace, "enabled?", tracer_enabled_p, 0);
+  rb_define_singleton_method(Trace, "dump", tracer_dump, 1);
+  rb_define_singleton_method(Trace, "start", tracer_start, 0);
+  rb_define_singleton_method(Trace, "stop", tracer_stop, 0);
+  rb_define_singleton_method(Trace, "reset", tracer_reset, 0);
 }

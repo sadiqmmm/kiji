@@ -31,6 +31,6 @@
 #tcltklib
 #thread
 #tk
-#tracer
+#trace
 #win32ole
 #zlib
