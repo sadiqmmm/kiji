@@ -126,19 +126,18 @@ void
 rb_register_newobj(int t)
 {
   if (rb_tracer_enabled) {
+    st_data_t file_hash = (st_data_t)strhash(ruby_sourcefile);
+    st_data_t value;
+    char *key = malloc(27);
+    char *tmp;
+
     stats.newobj_calls++;
     stats.types[t]++;
-
-    st_data_t file_hash = (st_data_t)strhash(ruby_sourcefile);
-    char *tmp;
 
     if (!st_lookup(file_ids, file_hash, 0)) {
       tmp = strdup(ruby_sourcefile);
       st_insert(file_ids, file_hash, (st_data_t)tmp);
     }
-
-    char *key = malloc(27);
-    st_data_t value;
 
     snprintf(key, 27, "%i:%i", file_hash, ruby_sourceline);
     if (!st_lookup(line_stats, (st_data_t)key, &value)) {
