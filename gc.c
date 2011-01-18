@@ -139,11 +139,11 @@ rb_register_newobj(int t)
       st_insert(file_ids, file_hash, (st_data_t)tmp);
     }
 
-    snprintf(key, 27, "%i:%i", file_hash, ruby_sourceline);
-    if (!st_lookup(line_stats, (st_data_t)key, &value)) {
-      st_insert(line_stats, (st_data_t)key, 1);
-    } else {
+    snprintf(key, 27, "%i:%i", (int)file_hash, ruby_sourceline);
+    if (st_lookup(line_stats, (st_data_t)key, &value)) {
       st_insert(line_stats, (st_data_t)key, (st_data_t)(value + 1));
+    } else {
+      st_insert(line_stats, (st_data_t)key, 1);
     }
   }
 }
