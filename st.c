@@ -40,7 +40,7 @@ static struct st_hash_type type_numhash = {
 };
 
 /* extern int strcmp(const char *, const char *); */
-static int strhash(const char *);
+int strhash(const char *);
 static struct st_hash_type type_strhash = {
     strcmp,
     strhash,
@@ -521,7 +521,7 @@ st_foreach(table, func, arg)
     return 0;
 }
 
-static int
+int
 strhash(string)
     register const char *string;
 {

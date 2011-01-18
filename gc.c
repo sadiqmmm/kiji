@@ -108,6 +108,7 @@ static int gc_cycles_since_last_longlife_gc = 0;
 static int rb_tracer_enabled;
 static object_stats_t stats;
 static st_table* line_stats;
+static st_table* file_ids;
 
 object_stats_t*
 rb_object_stats()
@@ -128,10 +129,18 @@ rb_register_newobj(int t)
     stats.newobj_calls++;
     stats.types[t]++;
 
-    char *key = malloc(strlen(ruby_sourcefile) + 12);
+    st_data_t file_hash = (st_data_t)strhash(ruby_sourcefile);
+    char *tmp;
+
+    if (!st_lookup(file_ids, file_hash, 0)) {
+      tmp = strdup(ruby_sourcefile);
+      st_insert(file_ids, file_hash, (st_data_t)tmp);
+    }
+
+    char *key = malloc(27);
     st_data_t value;
 
-    snprintf(key, 1024, "%s:%i", ruby_sourcefile, ruby_sourceline);
+    snprintf(key, 27, "%i:%i", file_hash, ruby_sourceline);
     if (!st_lookup(line_stats, (st_data_t)key, &value)) {
       st_insert(line_stats, (st_data_t)key, 1);
     } else {
@@ -140,10 +149,20 @@ rb_register_newobj(int t)
   }
 }
 
+char *
+rb_trace_file_id(int id)
+{
+  char * file = 0;
+
+  st_lookup(file_ids, (st_data_t)id, (st_data_t *)file);
+  return file;
+}
+
 void
 rb_enable_tracing()
 {
   line_stats = st_init_strtable();
+  file_ids = st_init_numtable();
 
   rb_tracer_enabled = 1;
 }
@@ -153,6 +172,10 @@ rb_disable_tracing()
 {
   if (line_stats) {
     st_free_table(line_stats);
+  }
+
+  if (file_ids) {
+    st_free_table(file_ids);
   }
 
   rb_tracer_enabled = 0;

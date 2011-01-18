@@ -91,7 +91,11 @@ tracer_reset()
 int
 print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
 {
-  fprintf((FILE*)logfile, "rb_newobj count for %s: %i\n", (char*)key, (int)value);
+  char *file;
+
+  file = rb_trace_file_id((int)key);
+
+  fprintf((FILE*)logfile, "rb_newobj count for %s: %i\n", file, (int)value);
   return 0;
 }
 
