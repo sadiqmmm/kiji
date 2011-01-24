@@ -188,8 +188,13 @@ rb_enable_tracing()
 
   rb_reset_tracing();
 
-  line_stats = st_init_strtable();
-  file_ids = st_init_numtable();
+  if (!line_status) {
+    line_stats = st_init_strtable();
+  }
+
+  if (!file_ids) {
+    file_ids = st_init_numtable();
+  }
 
   rb_tracer_enabled = 1;
 }
@@ -255,13 +260,13 @@ rb_reset_tracing()
   if (line_stats) {
     st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)NULL);
     st_free_table(line_stats);
-    line_stats = NULL;
+    line_stats = st_init_strtable();
   }
 
   if (file_ids) {
     st_foreach(file_ids, rb_free_tracing_values, (st_data_t)NULL);
     st_free_table(file_ids);
-    file_ids = NULL;
+    file_ids = st_init_numtable();
   }
 
   memset(&stats, 0, sizeof(object_stats_t));
