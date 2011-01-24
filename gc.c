@@ -111,18 +111,28 @@ static object_stats_t stats;
 static st_table* line_stats;
 static st_table* file_ids;
 
+/*
+ * Accessor for the object stats global. This is used by the trace extension.
+ */
 object_stats_t*
 rb_object_stats()
 {
   return (object_stats_t*)&stats;
 }
 
+/*
+ * Accessor for the line_stats global. This is used by the trace extension.
+ */
 st_table*
 rb_line_stats()
 {
   return line_stats;
 }
 
+/*
+ * Register a new Ruby object allocation of type +t+ with the tracing framework.
+ * This function nops if the tracer is not enabled in the current context.
+ */
 void
 rb_register_newobj(int t)
 {
@@ -155,6 +165,10 @@ rb_register_newobj(int t)
   }
 }
 
+/*
+ * Lookup a file registered in rb_register_newobj() by its +id+. Returns the
+ * absolute path to the file.
+ */
 char *
 rb_trace_file_id(int id)
 {
@@ -164,35 +178,46 @@ rb_trace_file_id(int id)
   return file;
 }
 
+/*
+ * Enable tracing for the current context. This will (re-)initialize both the
+ * lines_stats and file_ids globals, throwing away any data contained therein.
+ */
 void
 rb_enable_tracing()
 {
+
+  rb_reset_tracing();
+
   line_stats = st_init_strtable();
   file_ids = st_init_numtable();
 
   rb_tracer_enabled = 1;
 }
 
+/*
+ * Disable tracing for the current context. This will clear any data collected
+ * while tracing was enabled.
+ */
 void
 rb_disable_tracing()
 {
-  if (line_stats) {
-    st_free_table(line_stats);
-  }
-
-  if (file_ids) {
-    st_free_table(file_ids);
-  }
-
+  rb_reset_tracing();
   rb_tracer_enabled = 0;
 }
 
+/*
+ * Returns 0 or 1 depending upon the state of the tracing framework.
+ */
 int
 rb_tracing_enabled_p()
 {
   return rb_tracer_enabled;
 }
 
+/*
+ * Given a key/value pair, frees the key allocated during rb_register_newobj().
+ * This is typically used as the second parameter to st_foreach.
+ */
 int
 rb_free_tracing_keys(st_data_t key, st_data_t value)
 {
@@ -205,13 +230,38 @@ rb_free_tracing_keys(st_data_t key, st_data_t value)
   return 0;
 }
 
+/*
+ * Given a key/value pair, frees the value allocated during rb_register_newobj().
+ * This is typically used as the second parameter to st_foreach.
+ */
+int
+rb_free_tracing_values(st_data_t key, st_data_t value)
+{
+  char* tmp = (char*)value;
+
+  if (tmp) {
+    free(tmp);
+  }
+
+  return 0;
+}
+
+/*
+ * Resets the state of the tracing framework, but does not change its enabled/disabled status.
+ */
 void
 rb_reset_tracing()
 {
   if (line_stats) {
     st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)NULL);
     st_free_table(line_stats);
-    line_stats = st_init_strtable();
+    line_stats = NULL;
+  }
+
+  if (file_ids) {
+    st_foreach(file_ids, rb_free_tracing_values, (st_data_t)NULL);
+    st_free_table(file_ids);
+    file_ids = NULL;
   }
 
   memset(&stats, 0, sizeof(object_stats_t));
