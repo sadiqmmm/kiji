@@ -3,12 +3,24 @@
 
 static VALUE Trace;
 
+/*
+ *  call-seq:
+ *    Trace.enabled?          => bool
+ *
+ *  Returns the current state of the tracing framework.
+ */
 VALUE
 tracer_enabled_p()
 {
   return (rb_tracing_enabled_p() ? Qtrue : Qfalse);
 }
 
+/*
+ *  call-seq:
+ *    Trace.start          => nil
+ *
+ *  Enables tracing. If tracing is already enabled, nops.
+ */
 VALUE
 tracer_start()
 {
@@ -16,6 +28,12 @@ tracer_start()
   return Qnil;
 }
 
+/*
+ *  call-seq:
+ *    Trace.stop          => nil
+ *
+ *  Disables tracing. If tracing is already disabled, nops.
+ */
 VALUE
 tracer_stop()
 {
@@ -81,6 +99,12 @@ type_string(int type) {
   }
 }
 
+/*
+ *  call-seq:
+ *    Trace.reset          => nil
+ *
+ *  Resets tracing data gathered since enable, reset or dump were called.
+ */
 VALUE
 tracer_reset()
 {
@@ -118,6 +142,13 @@ print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
   return 0;
 }
 
+/*
+ *  call-seq:
+ *    Trace.dump(filename)          => nil
+ *
+ *  Dumps and resets any tracing data collected since the last enable, reset or dump call
+ *  to the provided file name.
+ */
 VALUE
 tracer_dump(VALUE self, VALUE _logfile)
 {
