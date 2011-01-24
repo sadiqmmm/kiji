@@ -179,47 +179,6 @@ rb_trace_file_id(int id)
 }
 
 /*
- * Enable tracing for the current context. This will (re-)initialize both the
- * lines_stats and file_ids globals, throwing away any data contained therein.
- */
-void
-rb_enable_tracing()
-{
-
-  rb_reset_tracing();
-
-  if (!line_status) {
-    line_stats = st_init_strtable();
-  }
-
-  if (!file_ids) {
-    file_ids = st_init_numtable();
-  }
-
-  rb_tracer_enabled = 1;
-}
-
-/*
- * Disable tracing for the current context. This will clear any data collected
- * while tracing was enabled.
- */
-void
-rb_disable_tracing()
-{
-  rb_reset_tracing();
-  rb_tracer_enabled = 0;
-}
-
-/*
- * Returns 0 or 1 depending upon the state of the tracing framework.
- */
-int
-rb_tracing_enabled_p()
-{
-  return rb_tracer_enabled;
-}
-
-/*
  * Given a key/value pair, frees the key allocated during rb_register_newobj().
  * This is typically used as the second parameter to st_foreach.
  */
@@ -270,6 +229,47 @@ rb_reset_tracing()
   }
 
   memset(&stats, 0, sizeof(object_stats_t));
+}
+
+/*
+ * Enable tracing for the current context. This will (re-)initialize both the
+ * lines_stats and file_ids globals, throwing away any data contained therein.
+ */
+void
+rb_enable_tracing()
+{
+
+  rb_reset_tracing();
+
+  if (!line_stats) {
+    line_stats = st_init_strtable();
+  }
+
+  if (!file_ids) {
+    file_ids = st_init_numtable();
+  }
+
+  rb_tracer_enabled = 1;
+}
+
+/*
+ * Disable tracing for the current context. This will clear any data collected
+ * while tracing was enabled.
+ */
+void
+rb_disable_tracing()
+{
+  rb_reset_tracing();
+  rb_tracer_enabled = 0;
+}
+
+/*
+ * Returns 0 or 1 depending upon the state of the tracing framework.
+ */
+int
+rb_tracing_enabled_p()
+{
+  return rb_tracer_enabled;
 }
 
 /*
