@@ -105,6 +105,7 @@ static int longlife_heaps_used = 0;
 static int longlife_collection = Qfalse;
 static int gc_cycles_since_last_longlife_gc = 0;
 
+#define TRACER_MAX_KEY_LENGTH 27
 static int rb_tracer_enabled;
 static object_stats_t stats;
 static st_table* line_stats;
@@ -116,7 +117,7 @@ rb_object_stats()
   return (object_stats_t*)&stats;
 }
 
-void*
+st_table*
 rb_line_stats()
 {
   return line_stats;
@@ -128,7 +129,7 @@ rb_register_newobj(int t)
   if (rb_tracer_enabled) {
     st_data_t file_hash = (st_data_t)strhash(ruby_sourcefile);
     st_data_t value;
-    char *key = malloc(27);
+    char *key;
     char *tmp;
 
     stats.newobj_calls++;
@@ -139,7 +140,13 @@ rb_register_newobj(int t)
       st_insert(file_ids, file_hash, (st_data_t)tmp);
     }
 
-    snprintf(key, 27, "%i:%i", (int)file_hash, ruby_sourceline);
+    key = malloc(TRACER_MAX_KEY_LENGTH);
+
+    if (!key) {
+      rb_bug("unable to allocate newobj key");
+    }
+
+    snprintf(key, TRACER_MAX_KEY_LENGTH, "%i:%i", (int)file_hash, ruby_sourceline);
     if (st_lookup(line_stats, (st_data_t)key, &value)) {
       st_insert(line_stats, (st_data_t)key, (st_data_t)(value + 1));
     } else {
@@ -153,7 +160,7 @@ rb_trace_file_id(int id)
 {
   char * file = 0;
 
-  st_lookup(file_ids, (st_data_t)id, (st_data_t *)file);
+  st_lookup(file_ids, (st_data_t)id, (st_data_t *)&file);
   return file;
 }
 
@@ -189,7 +196,12 @@ rb_tracing_enabled_p()
 int
 rb_free_tracing_keys(st_data_t key, st_data_t value)
 {
-  free((char *)key);
+  char* tmp = (char*)key;
+
+  if (tmp) {
+    free(tmp);
+  }
+
   return 0;
 }
 
@@ -197,7 +209,7 @@ void
 rb_reset_tracing()
 {
   if (line_stats) {
-    st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)0);
+    st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)NULL);
     st_free_table(line_stats);
     line_stats = st_init_strtable();
   }

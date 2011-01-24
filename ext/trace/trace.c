@@ -1,5 +1,5 @@
 #include "ruby.h"
-#include "st.h"
+#include "trace.h"
 
 static VALUE Trace;
 
@@ -92,10 +92,29 @@ int
 print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
 {
   char *file;
+  char *line;
+  int hashkey;
 
-  file = rb_trace_file_id((int)key);
+  if (!key) {
+    rb_bug("NULL key encountered in line stats");
+    return 1;
+  }
 
-  fprintf((FILE*)logfile, "rb_newobj count for %s: %i\n", file, (int)value);
+  file = (char *)key;
+  line = (char *)malloc(strlen(file) + 1);
+
+  if (!line) {
+    rb_bug("Failed allocation in print_line_stats()");
+    return 1;
+  }
+
+  memcpy(line, file, strlen(file) + 1);
+
+  file = strsep(&line, ":");
+  hashkey = atoi(file);
+  file = rb_trace_file_id(hashkey);
+
+  fprintf((FILE*)logfile, "rb_newobj\t%s\t%s\t%i\n", file, line, (int)value);
   return 0;
 }
 
