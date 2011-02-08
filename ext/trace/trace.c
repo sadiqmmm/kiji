@@ -119,6 +119,8 @@ print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
   char *line;
   int hashkey;
 
+  ASSERT(rb_tracing_enabled_p());
+
   if (!key) {
     rb_bug("NULL key encountered in line stats");
     return 1;
@@ -132,7 +134,8 @@ print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
     return 1;
   }
 
-  memcpy(line, file, strlen(file) + 1);
+  bzero(&line, strlen(file) + 1);
+  memcpy(line, file, strlen(file));
 
   file = strsep(&line, ":");
   hashkey = atoi(file);
@@ -154,9 +157,9 @@ tracer_dump(VALUE self, VALUE _logfile)
 {
   int i;
 
-  Check_Type(_logfile, T_STRING);
-
   if (rb_tracing_enabled_p()) {
+    Check_Type(_logfile, T_STRING);
+
     object_stats_t stats = (object_stats_t)*rb_object_stats();
     FILE *logfile = fopen(StringValueCStr(_logfile), "w");
 
