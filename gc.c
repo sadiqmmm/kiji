@@ -143,7 +143,12 @@ rb_register_newobj(int t)
     char *tmp;
 
     stats.newobj_calls++;
-    stats.types[t]++;
+
+    if (t < T_MASK + 1) {
+      stats.types[t]++;
+    } else {
+      stats.types[T_MASK + 1]++;
+    }
 
     if (!st_lookup(file_ids, file_hash, 0)) {
       tmp = strdup(ruby_sourcefile);
