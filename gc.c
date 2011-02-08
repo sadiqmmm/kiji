@@ -228,7 +228,10 @@ rb_reset_tracing()
     file_ids = st_init_numtable();
   }
 
-  memset(&stats, 0, sizeof(object_stats_t));
+  stats.newobj_calls = 0;
+  for (i = 0; i < T_MASK + 1; i++) {
+    stats.types[i] = 0;
+  }
 }
 
 /*
