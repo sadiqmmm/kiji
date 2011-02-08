@@ -177,7 +177,7 @@ rb_register_newobj(int t)
 char *
 rb_trace_file_id(int id)
 {
-  char * file = 0;
+  char * file = NULL;
 
   st_lookup(file_ids, (st_data_t)id, (st_data_t *)&file);
   return file;
