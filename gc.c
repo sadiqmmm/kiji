@@ -216,6 +216,8 @@ rb_free_tracing_values(st_data_t key, st_data_t value)
 void
 rb_reset_tracing()
 {
+  int i;
+
   if (line_stats) {
     st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)NULL);
     st_free_table(line_stats);
