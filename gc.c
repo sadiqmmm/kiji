@@ -236,7 +236,7 @@ rb_reset_tracing()
   }
 
   stats.newobj_calls = 0;
-  for (i = 0; i < T_UNKOWN; i++) {
+  for (i = 0; i < T_UNKNOWN; i++) {
     stats.types[i] = 0;
   }
 }
