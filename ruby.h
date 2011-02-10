@@ -220,6 +220,9 @@ VALUE rb_ull2inum _((unsigned LONG_LONG));
 
 #define T_MASK   0x3f
 
+// Used by the tracer for types which aren't available staticly
+#define T_UNKNOWN (T_MASK+1)
+
 #define BUILTIN_TYPE(x) (((struct RBasic*)(x))->flags & T_MASK)
 
 #define TYPE(x) rb_type((VALUE)(x))
@@ -802,7 +805,7 @@ void ruby_native_thread_kill _((int));
 
 typedef struct object_stats {
   int newobj_calls;
-  int types[T_MASK+1];
+  int types[T_UNKNOWN];
 } object_stats_t;
 
 object_stats_t* rb_object_stats();

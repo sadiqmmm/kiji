@@ -144,10 +144,10 @@ rb_register_newobj(int t)
 
     stats.newobj_calls++;
 
-    if (t < T_MASK + 1) {
+    if (t < T_UNKNOWN) {
       stats.types[t]++;
     } else {
-      stats.types[T_MASK + 1]++;
+      stats.types[T_UNKNOWN]++;
     }
 
     if (!st_lookup(file_ids, file_hash, 0)) {
@@ -236,7 +236,7 @@ rb_reset_tracing()
   }
 
   stats.newobj_calls = 0;
-  for (i = 0; i < T_MASK + 1; i++) {
+  for (i = 0; i < T_UNKOWN; i++) {
     stats.types[i] = 0;
   }
 }

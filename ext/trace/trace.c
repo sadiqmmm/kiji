@@ -169,7 +169,7 @@ tracer_dump(VALUE self, VALUE _logfile)
 
     fprintf(logfile, "rb_newobj count: %i\n", stats.newobj_calls);
 
-    for (i = 0; i < T_MASK + 1; i++) {
+    for (i = 0; i < T_UNKNOWN; i++) {
       if (stats.types[i] > 0) {
         fprintf(logfile, "%s count: %i\n", type_string(i), stats.types[i]);
       }
