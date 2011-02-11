@@ -68,5 +68,5 @@ st_table *st_copy _((st_table *));
 #define st_numhash	ST_NUMHASH
 
 int st_strhash();
-
+int strhash(const char *);
 #endif /* ST_INCLUDED */

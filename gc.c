@@ -105,46 +105,181 @@ static int longlife_heaps_used = 0;
 static int longlife_collection = Qfalse;
 static int gc_cycles_since_last_longlife_gc = 0;
 
+#define TRACER_MAX_KEY_LENGTH 27
 static int rb_tracer_enabled;
 static object_stats_t stats;
+static st_table* line_stats;
+static st_table* file_ids;
 
+/*
+ * Accessor for the object stats global. This is used by the trace extension.
+ */
 object_stats_t*
 rb_object_stats()
 {
   return (object_stats_t*)&stats;
 }
 
+/*
+ * Accessor for the line_stats global. This is used by the trace extension.
+ */
+st_table*
+rb_line_stats()
+{
+  return line_stats;
+}
+
+/*
+ * Register a new Ruby object allocation of type +t+ with the tracing framework.
+ * This function nops if the tracer is not enabled in the current context.
+ */
 void
 rb_register_newobj(int t)
 {
   if (rb_tracer_enabled) {
+    st_data_t file_hash = (st_data_t)strhash(ruby_sourcefile);
+    st_data_t value;
+    char *key;
+    char *tmp;
+
     stats.newobj_calls++;
-    stats.types[t]++;
+
+    if (t < T_UNKNOWN) {
+      stats.types[t]++;
+    } else {
+      stats.types[T_UNKNOWN]++;
+    }
+
+    if (!st_lookup(file_ids, file_hash, 0)) {
+      tmp = strdup(ruby_sourcefile);
+      st_insert(file_ids, file_hash, (st_data_t)tmp);
+    }
+
+    key = malloc(TRACER_MAX_KEY_LENGTH);
+
+    if (!key) {
+      rb_bug("unable to allocate newobj key");
+    }
+
+    snprintf(key, TRACER_MAX_KEY_LENGTH, "%i:%i", (int)file_hash, ruby_sourceline);
+    if (st_lookup(line_stats, (st_data_t)key, &value)) {
+      st_insert(line_stats, (st_data_t)key, (st_data_t)(value + 1));
+    } else {
+      st_insert(line_stats, (st_data_t)key, 1);
+    }
   }
 }
 
+/*
+ * Lookup a file registered in rb_register_newobj() by its +id+. Returns the
+ * absolute path to the file.
+ */
+char *
+rb_trace_file_id(int id)
+{
+  char * file = NULL;
+
+  st_lookup(file_ids, (st_data_t)id, (st_data_t *)&file);
+  return file;
+}
+
+/*
+ * Given a key/value pair, frees the key allocated during rb_register_newobj().
+ * This is typically used as the second parameter to st_foreach.
+ */
+int
+rb_free_tracing_keys(st_data_t key, st_data_t value)
+{
+  char* tmp = (char*)key;
+
+  if (tmp) {
+    free(tmp);
+  }
+
+  return 0;
+}
+
+/*
+ * Given a key/value pair, frees the value allocated during rb_register_newobj().
+ * This is typically used as the second parameter to st_foreach.
+ */
+int
+rb_free_tracing_values(st_data_t key, st_data_t value)
+{
+  char* tmp = (char*)value;
+
+  if (tmp) {
+    free(tmp);
+  }
+
+  return 0;
+}
+
+/*
+ * Resets the state of the tracing framework, but does not change its enabled/disabled status.
+ */
+void
+rb_reset_tracing()
+{
+  int i;
+
+  if (line_stats) {
+    st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)NULL);
+    st_free_table(line_stats);
+    line_stats = st_init_strtable();
+  }
+
+  if (file_ids) {
+    st_foreach(file_ids, rb_free_tracing_values, (st_data_t)NULL);
+    st_free_table(file_ids);
+    file_ids = st_init_numtable();
+  }
+
+  stats.newobj_calls = 0;
+  for (i = 0; i < T_UNKNOWN; i++) {
+    stats.types[i] = 0;
+  }
+}
+
+/*
+ * Enable tracing for the current context. This will (re-)initialize both the
+ * lines_stats and file_ids globals, throwing away any data contained therein.
+ */
 void
 rb_enable_tracing()
 {
+
+  rb_reset_tracing();
+
+  if (!line_stats) {
+    line_stats = st_init_strtable();
+  }
+
+  if (!file_ids) {
+    file_ids = st_init_numtable();
+  }
+
   rb_tracer_enabled = 1;
 }
 
+/*
+ * Disable tracing for the current context. This will clear any data collected
+ * while tracing was enabled.
+ */
 void
 rb_disable_tracing()
 {
+  rb_reset_tracing();
   rb_tracer_enabled = 0;
 }
 
+/*
+ * Returns 0 or 1 depending upon the state of the tracing framework.
+ */
 int
 rb_tracing_enabled_p()
 {
   return rb_tracer_enabled;
-}
-
-void
-rb_reset_tracing()
-{
-  memset(&stats, 0, sizeof(object_stats_t));
 }
 
 /*
