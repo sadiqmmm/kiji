@@ -220,7 +220,7 @@ VALUE rb_ull2inum _((unsigned LONG_LONG));
 
 #define T_MASK   0x3f
 
-// Used by the tracer for types which aren't available staticly
+// Used by the tracer for types which aren't available statically
 #define T_UNKNOWN (T_MASK+1)
 
 #define BUILTIN_TYPE(x) (((struct RBasic*)(x))->flags & T_MASK)
