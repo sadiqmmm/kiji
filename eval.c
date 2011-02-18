@@ -1141,6 +1141,20 @@ rb_thread_t rb_main_thread;
 #define main_thread rb_main_thread
 #define curr_thread rb_curr_thread
 
+
+#ifndef STACK_FREE_SAFE_DEBUG
+#define STACK_FREE_SAFE_DEBUG 0
+#endif
+
+#if STACK_FREE_SAFE_DEBUG
+#define stack_free_safe(TH,MSG) _stack_free_safe(TH,MSG)
+#else
+#define stack_free_safe(TH,MSG) _stack_free_safe(TH)
+#endif
+
+
+static void stack_free_safe_all_dead_threads();
+
 static void scope_dup _((struct SCOPE *));
 
 #define POP_SCOPE() 			\
@@ -10999,6 +11013,9 @@ rb_thread_restore_context_0(rb_thread_t th, int exit)
     static int ex;
     static VALUE tval;
 
+    /* Free any dead thread's stk_ptr. */
+    stack_free_safe_all_dead_threads();
+
     rb_trap_immediate = 0;	/* inhibit interrupts from here */
     if (ruby_sandbox_restore != NULL) {
 	ruby_sandbox_restore(th);
@@ -11130,12 +11147,57 @@ rb_thread_ready(th)
     }
 }
 
+static
+rb_thread_t dead_thread_needs_stack_free = 0;
+
+static
+int dead_threads_need_stack_free = 0;
+
+static int
+_stack_free_safe (th
+#if STACK_FREE_SAFE_DEBUG
+		 , msg
+#endif
+		 )
+    rb_thread_t th;
+#if STACK_FREE_SAFE_DEBUG
+    const char *msg;
+#endif
+{
+    if ( th->status == THREAD_KILLED && th->stk_ptr ) {
+        void *sp = (void*) &th;
+#if STACK_FREE_SAFE_DEBUG
+        fprintf(stderr, "\n%s: stack_free_safe(%p): sp (%p): stk [%p, %p): ", 
+                msg, th, sp, th->stk_ptr, th->stk_ptr + th->stk_size);
+#endif
+        if ( (void*) th->stk_ptr <= sp && sp < (void*) (th->stk_ptr + th->stk_size) ) {
+#if STACK_FREE_SAFE_DEBUG
+            fprintf(stderr, "  cannot call stack_free(), yet. \n");
+            fflush(stderr);
+#endif
+            dead_thread_needs_stack_free = th;
+            ++ dead_threads_need_stack_free;
+        } else {
+#if STACK_FREE_SAFE_DEBUG
+            fprintf(stderr, "  calling stack_free(). \n");
+            fflush(stderr);
+#endif
+            if ( dead_thread_needs_stack_free == th )
+                dead_thread_needs_stack_free = 0;
+            stack_free(th);
+            return 1; /* stack freed. */
+        }
+    }
+    return 0; /* stack not freed */
+}
+
 static void
 rb_thread_die(th)
     rb_thread_t th;
 {
     th->thgroup = 0;
     th->status = THREAD_KILLED;
+    stack_free_safe(th, "rb_thread_die");
 }
 
 static void
@@ -11330,6 +11392,7 @@ rb_thread_schedule()
 	if (th->status != THREAD_STOPPED) continue;
 	if (th->wait_for & WAIT_JOIN) {
 	    if (rb_thread_dead(th->join)) {
+                th->wait_for = 0;
 		th->status = THREAD_RUNNABLE;
 		found = 1;
 	    }
@@ -11832,6 +11895,23 @@ rb_thread_join(thread, limit)
 {
     if (limit < 0) limit = DELAY_INFTY;
     return rb_thread_join0(THREAD_DATA(thread), limit);
+}
+
+void
+rb_thread_set_join(thread, join)
+    VALUE thread, join;
+{
+    rb_thread_t th = rb_thread_check(thread);
+    rb_thread_t jth = rb_thread_check(join);
+    if ( (th->wait_for & WAIT_JOIN) == 0) {
+       rb_bug( "Internal consistency failure! Expected thread to already be in waiting to join state %0x, was in %0x", WAIT_JOIN, th->wait_for);
+    }
+
+    if (th->join != curr_thread) {
+       rb_bug( "Internal consistency failure! Should only invoke rb_thread_set_join from a mutex unlock. Thread join aiming at %0x which something other than current thread %0x", th->join, curr_thread);
+    }
+
+    th->join = jth;
 }
 
 
@@ -12609,6 +12689,8 @@ static struct timer_thread {
     pthread_t thread;
 } time_thread = {PTHREAD_COND_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
 
+static int timer_stopping;
+
 #define safe_mutex_lock(lock) \
     pthread_mutex_lock(lock); \
     pthread_cleanup_push((void (*)_((void *)))pthread_mutex_unlock, lock)
@@ -12633,6 +12715,9 @@ thread_timer(dummy)
 #define WAIT_FOR_10MS() \
     pthread_cond_timedwait(&running->cond, &running->lock, get_ts(&to, PER_NANO/100))
     while ((err = WAIT_FOR_10MS()) == EINTR || err == ETIMEDOUT) {
+      if (timer_stopping)
+        break;
+
 	if (!rb_thread_critical) {
 	    rb_thread_pending = 1;
 	    if (rb_trap_immediate) {
@@ -12660,7 +12745,9 @@ rb_thread_start_timer()
     safe_mutex_lock(&time_thread.lock);
     if (pthread_create(&time_thread.thread, 0, thread_timer, args) == 0) {
 	thread_init = 1;
+#if !defined(__NetBSD__) && !defined(__APPLE__) && !defined(linux)
 	pthread_atfork(0, 0, rb_thread_stop_timer);
+#endif
 	pthread_cond_wait(&start, &time_thread.lock);
     }
     pthread_cleanup_pop(1);
@@ -12671,10 +12758,12 @@ rb_thread_stop_timer()
 {
     if (!thread_init) return;
     safe_mutex_lock(&time_thread.lock);
+    timer_stopping = 1;
     pthread_cond_signal(&time_thread.cond);
     thread_init = 0;
     pthread_cleanup_pop(1);
     pthread_join(time_thread.thread, NULL);
+    timer_stopping = 0;
 }
 #elif defined(HAVE_SETITIMER)
 static void
@@ -13142,6 +13231,40 @@ rb_thread_wait_other_threads()
 	END_FOREACH(th);
 	if (!found) return;
 	rb_thread_schedule();
+    }
+}
+
+static void
+stack_free_safe_all_dead_threads()
+{
+    if ( dead_threads_need_stack_free ) {
+        rb_thread_t curr, th;
+        int left = dead_threads_need_stack_free;
+
+#if STACK_FREE_SAFE_DEBUG
+        fprintf(stderr, "\nstack_free_safe_all_dead_threads(): %d\n", dead_threads_need_stack_free);
+        fflush(stderr);
+#endif
+
+        /* stack_free_safe() will increment this flag if stack_free_safe(th) cannot call stack_free(). */
+        dead_threads_need_stack_free = 0;
+
+        /*
+        ** Check the last known dead thread that needs stack_free().
+        ** That thread might have been rb_thread_remove()'ed from the thread ring.
+        ** Otherwise, start after current thread's stk_ptr, it should not be freeable anyway.
+        */
+        if ( th = dead_thread_needs_stack_free ) {
+	    if ( stack_free_safe(th, "stack_free_safe_all_dead_threads") )
+	        if ( -- left <= 0 ) return;
+        }
+
+        curr = curr_thread;
+        FOREACH_THREAD_FROM(curr, th) {
+            if ( stack_free_safe(th, "stack_free_safe_all_dead_threads") )
+                if ( -- left <= 0 ) return;
+        }
+        END_FOREACH_FROM(curr, th);
     }
 }
 

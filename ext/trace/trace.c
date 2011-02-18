@@ -1,3 +1,4 @@
+#include <assert.h>
 #include "ruby.h"
 #include "trace.h"
 
@@ -119,7 +120,7 @@ print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
   char *line;
   int hashkey;
 
-  ASSERT(rb_tracing_enabled_p());
+  assert(rb_tracing_enabled_p());
 
   if (!key) {
     rb_bug("NULL key encountered in line stats");
@@ -134,7 +135,7 @@ print_line_stats(st_data_t key, st_data_t value, st_data_t logfile)
     return 1;
   }
 
-  bzero(&line, strlen(file) + 1);
+  bzero(line, strlen(file) + 1);
   memcpy(line, file, strlen(file));
 
   file = strsep(&line, ":");
