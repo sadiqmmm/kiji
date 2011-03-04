@@ -7028,7 +7028,7 @@ rb_obj_instance_eval(argc, argv, self)
 {
     VALUE klass, result;
 
-    rb_temp_disable_longlife();
+    VALUE longlife_disabled = rb_temp_disable_longlife();
 
     if (SPECIAL_CONST_P(self)) {
 	klass = Qnil;
@@ -7038,7 +7038,9 @@ rb_obj_instance_eval(argc, argv, self)
     }
     result = specific_eval(argc, argv, klass, self);
 
-    rb_temp_enable_longlife();
+    if(longlife_disabled == Qfalse) {
+        rb_temp_enable_longlife();
+    }
 
     return result;
 }
