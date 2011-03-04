@@ -56,7 +56,7 @@ int _setjmp(), _longjmp();
 #if defined(MSDOS) || defined(__human68k__)
 #define GC_MALLOC_LIMIT 200000
 #else
-#define GC_MALLOC_LIMIT (2000000*sizeof(VALUE))
+#define GC_MALLOC_LIMIT (6250000*sizeof(VALUE))
 #endif
 #endif
 
