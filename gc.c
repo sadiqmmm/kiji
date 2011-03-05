@@ -1177,6 +1177,20 @@ rb_newobj_eden(int type)
     if (!normal_heaps_space.freelist) garbage_collect();
 
     obj = pop_freelist(&normal_heaps_space);
+
+    if(verbose_gc_stats && type != -1 && (rand() % 1000) == 1) {
+        ruby_set_current_source();
+        if (!ruby_sourcefile) {
+            fprintf(gc_data_file, "   New eden allocation. Type: %d\n", type);
+        }
+        else if (!ruby_sourceline) {
+            fprintf(gc_data_file, "   New eden allocation in %s. Type: %d\n", ruby_sourcefile, type);
+        }
+        else {
+            fprintf(gc_data_file, "   New eden allocation in %s:%d. Type: %d\n", ruby_sourcefile, ruby_sourceline, type);
+        }
+    }
+
     live_objects++;
     if(live_objects > max_live_objects) {
 	max_live_objects = live_objects;
@@ -1228,19 +1242,21 @@ rb_newobj_longlife(int type)
         longlife_allocation_since_last_gc = 1;
         // Reset the exponential backoff cycle
         longlife_gc_after_gc_cycles = longlife_initial_delay;
-        if(verbose_gc_stats) {
-	    ruby_set_current_source();
-	    if (!ruby_sourcefile) {
-		fprintf(gc_data_file, "New longlife allocation. Type: %d\n", type);
-	    }
-	    else if (!ruby_sourceline) {
-		fprintf(gc_data_file, "New longlife allocation in %s. Type: %d\n", ruby_sourcefile, type);
-	    }
-	    else {
-		fprintf(gc_data_file, "New longlife allocation in %s:%d. Type: %d\n", ruby_sourcefile, ruby_sourceline, type);
-	    }
+    }
+
+    if(verbose_gc_stats && type != -1 && (rand() % 1000) == 1) {
+        ruby_set_current_source();
+        if (!ruby_sourcefile) {
+            fprintf(gc_data_file, "   New longlife allocation. Type: %d\n", type);
+        }
+        else if (!ruby_sourceline) {
+            fprintf(gc_data_file, "   New longlife allocation in %s. Type: %d\n", ruby_sourcefile, type);
+        }
+        else {
+            fprintf(gc_data_file, "   New longlife allocation in %s:%d. Type: %d\n", ruby_sourcefile, ruby_sourceline, type);
         }
     }
+
     longlife_live_objects++;
     if(longlife_live_objects > longlife_max_live_objects) {
 	longlife_max_live_objects = longlife_live_objects;
