@@ -869,7 +869,7 @@ static struct heaps_slot {
 static int heaps_length = 0;
 static int heaps_used   = 0;
 
-static int heap_min_slots = 10000;
+static int heap_min_slots = 240000;
 typedef struct heaps_space {
     int heap_slots;
     int heap_slots_increment;
@@ -881,7 +881,7 @@ static heaps_space_t normal_heaps_space;
 static heaps_space_t longlife_heaps_space;
 
 static int heap_free_min = 4096;
-static double heap_slots_growth_factor = 1.8;
+static double heap_slots_growth_factor = 1.0;
 
 static int verbose_gc_stats = Qfalse;
 
@@ -3194,9 +3194,6 @@ static void init_heaps_space(heaps_space_t* heaps_space, enum lifetime lifetime)
     heaps_space->lifetime = lifetime;
     if(heaps_space->heap_slots == 0) {
 	heaps_space->heap_slots = 10000;
-    }
-    if(heaps_space->heap_slots_increment == 0) {
-	heaps_space->heap_slots_increment = 10000;
     }
 }
 /*
