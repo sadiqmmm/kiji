@@ -1167,7 +1167,7 @@ pop_freelist(heaps_space_t* heaps_space)
 }
 
 VALUE
-rb_newobj()
+rb_newobj_eden(int type)
 {
     VALUE obj;
 
@@ -1215,7 +1215,7 @@ rb_newobj_longlife(int type)
     VALUE obj;
 
     if (longlife_disabled == Qtrue || longlife_temp_disable == Qtrue)
-        return rb_newobj();
+        return rb_newobj_eden(type);
 
     if (during_gc)
 	rb_bug("object allocation during garbage collection phase");

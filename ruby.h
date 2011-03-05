@@ -307,11 +307,17 @@ char *rb_str2cstr _((VALUE,long*));
                      RSTRING(x)->ptr[0]:(char)(NUM2INT(x)&0xff))
 #define CHR2FIX(x) INT2FIX((long)((x)&0xff))
 
-VALUE rb_newobj _((void));
 VALUE rb_newobj_longlife _((int));
+VALUE rb_newobj_eden _((int));
 void rb_register_newobj _((int));
 
-#define NEWOBJ(obj,type) type *obj = (type*)rb_newobj()
+// Default allocator
+#define NEWOBJ(obj,type) type *obj = (type*)rb_newobj_eden(-1)
+
+// Specific allocators
+#define NEWOBJ_LONGLIFE(obj,type) type *obj = (type*)rb_newobj_longlife(-1)
+#define NEWOBJ_EDEN(obj,type) type *obj = (type*)rb_newobj_eden(-1)
+
 #define OBJSETUP(obj,c,t) do {\
     rb_register_newobj(t);\
     RBASIC(obj)->flags = (t);\
@@ -481,9 +487,9 @@ struct RBignum {
 #define FL_FINALIZE       (1<<7)
 #define FL_TAINT          (1<<8)
 #define FL_EXIVAR         (1<<9)
-#define FL_FREEZE         (1<<10)   
-#define FL_REMEMBERED_SET (1<<11)   
-#define FL_LONGLIFE       (1<<12)   
+#define FL_FREEZE         (1<<10)
+#define FL_REMEMBERED_SET (1<<11)
+#define FL_LONGLIFE       (1<<12)
 
 #define FL_USHIFT    13
 

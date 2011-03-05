@@ -748,7 +748,7 @@ sort_by_i(i, ary)
     if (RBASIC(ary)->klass) {
 	rb_raise(rb_eRuntimeError, "sort_by reentered");
     }
-    memo = rb_node_newnode(NODE_MEMO, v, i, 0);
+    memo = NEW_NODE_EDEN(NODE_MEMO, v, i, 0);
     rb_ary_push(ary, (VALUE)memo);
     return Qnil;
 }

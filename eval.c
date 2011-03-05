@@ -5688,7 +5688,7 @@ rb_protect(proc, data, state)
     int status;
 
     PUSH_TAG(PROT_EMPTY);
-    cont_protect = (VALUE)rb_node_newnode(NODE_MEMO, cont_protect, 0, 0);
+    cont_protect = (VALUE)NEW_NODE_EDEN(NODE_MEMO, cont_protect, 0, 0);
     if ((status = EXEC_TAG()) == 0) {
 	result = (*proc)(data);
     }

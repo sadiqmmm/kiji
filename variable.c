@@ -1332,7 +1332,7 @@ rb_autoload(mod, id, file)
     fn = rb_str_new2(file);
     FL_UNSET(fn, FL_TAINT);
     OBJ_FREEZE(fn);
-    st_insert(tbl, id, (st_data_t)rb_node_newnode(NODE_MEMO, fn, ruby_safe_level, 0));
+    st_insert(tbl, id, (st_data_t)NEW_NODE_EDEN(NODE_MEMO, fn, ruby_safe_level, 0));
 }
 
 static NODE*

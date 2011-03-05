@@ -231,8 +231,12 @@ extern NODE *ruby_top_cref;
 #define nd_tag   u1.id
 #define nd_tval  u2.value
 
+// Default node allocator
 #define NEW_NODE(t,a0,a1,a2) rb_node_newnode_longlife((t),(VALUE)(a0),(VALUE)(a1),(VALUE)(a2))
-#define NEW_NODE_SHORTLIFE(t,a0,a1,a2) rb_node_newnode((t),(VALUE)(a0),(VALUE)(a1),(VALUE)(a2))
+
+// Specific node allocators
+#define NEW_NODE_EDEN(t,a0,a1,a2) rb_node_newnode_eden((t),(VALUE)(a0),(VALUE)(a1),(VALUE)(a2))
+#define NEW_NODE_LONGLIFE(t,a0,a1,a2) rb_node_newnode_longlife((t),(VALUE)(a0),(VALUE)(a1),(VALUE)(a2))
 
 #define NEW_METHOD(n,x) NEW_NODE(NODE_METHOD,x,n,0)
 #define NEW_FBODY(n,i,o) NEW_NODE(NODE_FBODY,n,i,o)
@@ -241,7 +245,7 @@ extern NODE *ruby_top_cref;
 #define NEW_CFUNC(f,c) NEW_NODE(NODE_CFUNC,f,c,0)
 /* IFUNC nodes are created whenever an enumeration runs; see rb_iterate(). For
    this reason, they're allocated in ordinary heap. */
-#define NEW_IFUNC(f,c) NEW_NODE_SHORTLIFE(NODE_IFUNC,f,c,0)
+#define NEW_IFUNC(f,c) NEW_NODE_EDEN(NODE_IFUNC,f,c,0)
 #define NEW_RFUNC(b1,b2) NEW_SCOPE(block_append(b1,b2))
 #define NEW_SCOPE(b) NEW_NODE(NODE_SCOPE,local_tbl(),0,(b))
 #define NEW_BLOCK(a) NEW_NODE(NODE_BLOCK,a,0,0)
@@ -351,7 +355,7 @@ NODE *rb_compile_string _((const char*, VALUE, int));
 NODE *rb_compile_file _((const char*, VALUE, int));
 
 void rb_add_method _((VALUE, ID, NODE *, int));
-NODE *rb_node_newnode _((enum node_type,VALUE,VALUE,VALUE));
+NODE *rb_node_newnode_eden _((enum node_type,VALUE,VALUE,VALUE));
 NODE *rb_node_newnode_longlife _((enum node_type,VALUE,VALUE,VALUE));
 
 NODE* rb_method_node _((VALUE klass, ID id));

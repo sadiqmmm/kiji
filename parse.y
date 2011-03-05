@@ -3197,7 +3197,7 @@ tokadd_string(func, term, paren, nest)
 }
 
 #define NEW_STRTERM(func, term, paren) \
-	rb_node_newnode(NODE_STRTERM, (func), (term) | ((paren) << (CHAR_BIT * 2)), 0)
+	NEW_NODE_EDEN(NODE_STRTERM, (func), (term) | ((paren) << (CHAR_BIT * 2)), 0)
 
 static int
 parse_string(quote)
@@ -3303,7 +3303,7 @@ heredoc_identifier()
     tokfix();
     len = lex_p - lex_pbeg;
     lex_p = lex_pend;
-    lex_strterm = rb_node_newnode(NODE_HEREDOC,
+    lex_strterm = NEW_NODE_EDEN(NODE_HEREDOC,
 				  rb_str_new(tok(), toklen()),	/* nd_lit */
 				  len,				/* nd_nth */
 				  lex_lastline);		/* nd_orig */
@@ -4585,11 +4585,11 @@ yylex()
 }
 
 NODE*
-rb_node_newnode(type, a0, a1, a2)
+rb_node_newnode_eden(type, a0, a1, a2)
     enum node_type type;
     VALUE a0, a1, a2;
 {
-    NODE *n = (NODE*)rb_newobj();
+    NODE *n = (NODE*)rb_newobj_eden(type);
 
     n->flags |= T_NODE;
     nd_set_type(n, type);
@@ -6302,15 +6302,15 @@ symbols_i(key, value, ary)
 /*
  *  call-seq:
  *     Symbol.all_symbols    => array
- *  
+ *
  *  Returns an array of all the symbols currently in Ruby's symbol
  *  table.
- *     
+ *
  *     Symbol.all_symbols.size    #=> 903
  *     Symbol.all_symbols[1,20]   #=> [:floor, :ARGV, :Binding, :symlink,
- *                                     :chown, :EOFError, :$;, :String, 
- *                                     :LOCK_SH, :"setuid?", :$<, 
- *                                     :default_proc, :compact, :extend, 
+ *                                     :chown, :EOFError, :$;, :String,
+ *                                     :LOCK_SH, :"setuid?", :$<,
+ *                                     :default_proc, :compact, :extend,
  *                                     :Tms, :getwd, :$=, :ThreadGroup,
  *                                     :wait2, :$>]
  */
@@ -6425,7 +6425,7 @@ rb_lastline_set(val)
 
 #ifdef YYMALLOC
 #define HEAPCNT(n, size) ((n) * (size) / sizeof(YYSTYPE))
-#define NEWHEAP() rb_node_newnode(NODE_ALLOCA, 0, (VALUE)parser_heap, 0)
+#define NEWHEAP() NEW_NODE_EDEN(NODE_ALLOCA, 0, (VALUE)parser_heap, 0)
 #define ADD2HEAP(n, c, p) ((parser_heap = (n))->u1.node = (p), \
 			   (n)->u3.cnt = (c), (p))
 
