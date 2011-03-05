@@ -12,7 +12,7 @@
 
 **********************************************************************/
 
-/* 
+/*
  * Functions and variables that are used by more than one source file of
  * the kernel.
  */
@@ -269,7 +269,6 @@ void rb_gc_call_finalizer_at_exit _((void));
 VALUE rb_gc_enable _((void));
 VALUE rb_gc_disable _((void));
 VALUE rb_gc_start _((void));
-void rb_gc_unstress _((void));
 VALUE rb_gc_enable_stats _((void));
 VALUE rb_gc_disable_stats _((void));
 VALUE rb_gc_allocated_size _((void));

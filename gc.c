@@ -52,14 +52,6 @@ int _setjmp(), _longjmp();
 
 #define T_DEFERRED 0x3a
 
-#ifndef GC_MALLOC_LIMIT
-#if defined(MSDOS) || defined(__human68k__)
-#define GC_MALLOC_LIMIT 200000
-#else
-#define GC_MALLOC_LIMIT (6250000*sizeof(VALUE))
-#endif
-#endif
-
 #ifndef GC_LEVEL_MAX  /*maximum # of VALUEs on 'C' stack during GC*/
 #define GC_LEVEL_MAX  8000
 #endif
@@ -82,14 +74,9 @@ static VALUE *stack_limit;
  */
 static VALUE *gc_stack_limit;
 
-static size_t malloc_increase = 0;
-static size_t malloc_limit = GC_MALLOC_LIMIT;
-static size_t unstressed_malloc_limit = GC_MALLOC_LIMIT;
-
 static void run_final();
 static VALUE nomem_error;
 static void garbage_collect();
-
 
 #define LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY 8
 #define LONGLIFE_CYCLE_DEFAULT_DELAY 128
@@ -282,100 +269,7 @@ rb_tracing_enabled_p()
   return rb_tracer_enabled;
 }
 
-/*
- *  call-seq:
- *    GC.stress                 => true or false
- *
- *  returns current status of GC stress mode.
- */
-
-static VALUE
-gc_stress_get(self)
-    VALUE self;
-{
-    return malloc_limit ? Qfalse : Qtrue;
-}
-
-/*
- *  call-seq:
- *    GC.stress = bool          => bool
- *
- *  updates GC stress mode.
- *
- *  When GC.stress = true, GC is invoked for all GC opportunity:
- *  all memory and object allocation.
- *
- *  Since it makes Ruby very slow, it is only for debugging.
- */
-
-static VALUE
-gc_stress_set(self, bool)
-    VALUE self, bool;
-{
-    rb_secure(2);
-    if (!RTEST(bool))
-      malloc_limit = unstressed_malloc_limit;
-    else if (malloc_limit > 0) {
-      unstressed_malloc_limit = malloc_limit;
-      malloc_limit = 0;
-    }
-    return bool;
-}
-
 #ifdef MBARI_API
-/*
- *  call-seq:
- *     GC.limit    => increase limit in bytes
- *
- *  Get the # of bytes that may be allocated before triggering
- *  a mark and sweep by the garbarge collector to reclaim unused storage.
- *
- *  <i>Only available when MBARI_API extentions are enabled at build time</i>
- */
-static VALUE gc_getlimit(VALUE mod)
-{
-  return ULONG2NUM(malloc_limit);
-}
-
-/*
- *  call-seq:
- *     GC.limit=   => updated increase limit in bytes
- *
- *  Set the # of bytes that may be allocated before triggering
- *  a mark and sweep by the garbarge collector to reclaim unused storage.
- *  Attempts to set the GC.limit= less than 0 will be ignored.
- *
- *     GC.limit=5000000   #=> 5000000
- *     GC.limit           #=> 5000000
- *     GC.limit=-50       #=> 5000000
- *     GC.limit=0         #=> 0  #functionally equivalent to GC.stress=true
- *
- *  <i>Only available when MBARI_API extentions are enabled at build time</i>
- */
-static VALUE gc_setlimit(VALUE mod, VALUE newLimit)
-{
-  long limit = NUM2LONG(newLimit);
-  rb_secure(2);
-  if (limit < 0) return gc_getlimit(mod);
-  malloc_limit = limit;
-  return newLimit;
- }
-
-
-/*
- *  call-seq:
- *     GC.growth
- *
- *  Get # of bytes that have been allocated since the last mark & sweep
- *
- *  <i>Only available when MBARI_API extentions are enabled at build time</i>
- */
-static VALUE gc_growth(VALUE mod)
-{
-  return ULONG2NUM(malloc_increase);
-}
-
-
 /*
  *  call-seq:
  *     GC.exorcise
@@ -390,14 +284,6 @@ static VALUE gc_exorcise(VALUE mod)
   return Qnil;
 }
 #endif
-
-/*
- *  restore default malloc_limit
- */
-void rb_gc_unstress(void)
-{
-  malloc_limit = unstressed_malloc_limit;
-}
 
 NORETURN(void rb_exc_jump _((VALUE)));
 
@@ -425,11 +311,11 @@ void
 rb_memerror()
 {
     // If we throw a NoMemoryError, we're no longer doing GC. This will allow
-    // further allocations to occur in the handler for this error. Normally, 
-    // it goes unhandled and terminates the VM, but even in that case, 
-    // rb_write_error2() will create one new string as part of printing the 
+    // further allocations to occur in the handler for this error. Normally,
+    // it goes unhandled and terminates the VM, but even in that case,
+    // rb_write_error2() will create one new string as part of printing the
     // error message to stderr. Allowing allocations in NoMemoryError handler
-    // is okay -- by that time some or all of the stack frames were unwound, 
+    // is okay -- by that time some or all of the stack frames were unwound,
     // so some memory can be realistically allocated again; even a GC can
     // succeed.
     during_gc = 0;
@@ -462,10 +348,6 @@ ruby_xmalloc(size)
     }
     if (size == 0) size = 1;
 
-    if ((malloc_increase+=size) > malloc_limit) {
-	garbage_collect();
-        malloc_increase = size;
-    }
     RUBY_CRITICAL(mem = malloc(size));
     if (!mem) {
 	if(longlife_heaps_used) {
@@ -513,10 +395,7 @@ ruby_xrealloc(ptr, size)
     }
     if (!ptr) return xmalloc(size);
     if (size == 0) size = 1;
-    if ((malloc_increase+=size) > malloc_limit) {
-	garbage_collect();
-        malloc_increase = size;
-    }
+
     RUBY_CRITICAL(mem = realloc(ptr, size));
     if (!mem) {
 	if(longlife_heaps_used) {
@@ -1029,7 +908,7 @@ static int gc_longlife_cycles = 0;
 static void set_gc_parameters()
 {
     char *gc_stats_ptr, *min_slots_ptr, *free_min_ptr, *heap_slots_incr_ptr,
-         *heap_incr_ptr, *malloc_limit_ptr, *gc_heap_file_ptr,
+         *heap_incr_ptr, *gc_heap_file_ptr,
          *heap_slots_growth_factor_ptr, *longlife_disabled_ptr,
          *longlife_max_delay_ptr, *longlife_initial_delay_ptr;
 
@@ -1110,17 +989,6 @@ static void set_gc_parameters()
 	}
 	if (heap_slots_growth_factor_d > 0) {
 	    heap_slots_growth_factor = heap_slots_growth_factor_d;
-	}
-    }
-
-    malloc_limit_ptr = getenv("RUBY_GC_MALLOC_LIMIT");
-    if (malloc_limit_ptr != NULL) {
-	int malloc_limit_i = atol(malloc_limit_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_GC_MALLOC_LIMIT=%s\n", malloc_limit_ptr);
-	}
-	if (malloc_limit_i > 0) {
-	    malloc_limit = malloc_limit_i;
 	}
     }
 
@@ -1306,7 +1174,7 @@ rb_newobj()
     if (during_gc)
 	rb_bug("object allocation during garbage collection phase");
 
-    if (!malloc_limit || !normal_heaps_space.freelist) garbage_collect();
+    if (!normal_heaps_space.freelist) garbage_collect();
 
     obj = pop_freelist(&normal_heaps_space);
     live_objects++;
@@ -2274,7 +2142,6 @@ gc_sweep()
 	    freed += n;
 	}
     }
-    malloc_increase = 0;
     if (freed < free_min) {
 	if(longlife_heaps_used) {
 	    longlife_collection = Qtrue;
@@ -4110,8 +3977,6 @@ Init_GC()
     rb_define_singleton_method(rb_mGC, "growth", gc_growth, 0);
     rb_define_singleton_method(rb_mGC, "exorcise", gc_exorcise, 0);
 #endif
-    rb_define_singleton_method(rb_mGC, "stress", gc_stress_get, 0);
-    rb_define_singleton_method(rb_mGC, "stress=", gc_stress_set, 1);
     rb_define_method(rb_mGC, "garbage_collect", rb_gc_start, 0);
     rb_define_singleton_method(rb_mGC, "initialize_debugging", rb_gc_init_debugging, 0);
     rb_define_singleton_method(rb_mGC, "copy_on_write_friendly?", rb_gc_copy_on_write_friendly, 0);
