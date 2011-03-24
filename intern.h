@@ -324,6 +324,9 @@ VALUE rb_num2fix _((VALUE));
 VALUE rb_fix2str _((VALUE, int));
 VALUE rb_dbl_cmp _((double, double));
 /* object.c */
+#ifdef GC_DEBUG
+RUBY_EXTERN int longlife_moved_objs_count;
+#endif
 int rb_eql _((VALUE, VALUE));
 VALUE rb_any_to_s _((VALUE));
 VALUE rb_inspect _((VALUE));
@@ -356,6 +359,11 @@ double rb_str_to_dbl _((VALUE, int));
 /* parse.y */
 RUBY_EXTERN int   ruby_sourceline;
 RUBY_EXTERN char *ruby_sourcefile;
+#ifdef GC_DEBUG
+RUBY_EXTERN ID ruby_sourcefunc;
+RUBY_EXTERN VALUE ruby_sourcefunc_line;
+RUBY_EXTERN char* ruby_sourcefunc_file;
+#endif
 RUBY_EXTERN int ruby_in_compile;
 RUBY_EXTERN int ruby_in_constant_assignment;
 int ruby_yyparse _((void));

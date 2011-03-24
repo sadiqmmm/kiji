@@ -309,6 +309,32 @@ char *rb_str2cstr _((VALUE,long*));
 
 RUBY_EXTERN int ruby_in_longlife_context;
 
+#ifdef GC_DEBUG
+RUBY_EXTERN int gc_debug_on;
+
+struct source_position_list;
+
+typedef struct source_position {
+    char *file;
+    int line;
+    ID func;
+    VALUE frames_hash;
+    struct source_position *parent;
+} source_position_t;
+
+char *gc_debug_get_backtrace(source_position_t *source_pos);
+
+#define GC_DEBUG_ON (unlikely(gc_debug_on))
+#define GC_DEBUG_PRINTF(str,...) if (GC_DEBUG_ON) fprintf(gc_data_file, str, __VA_ARGS__);
+#define GC_DEBUG_PRINT(str) if (GC_DEBUG_ON) fprintf(gc_data_file, str);
+#define GC_DEBUG_SET_SOURCE if (GC_DEBUG_ON) ruby_set_current_source();
+#else
+#define GC_DEBUG_PRINTF(str,...) ;
+#define GC_DEBUG_PRINT(str) ;
+#define GC_DEBUG_ON (0)
+#define GC_DEBUG_SET_SOURCE
+#endif /* GC_DEBUG */
+
 VALUE rb_newobj_eden _((int));
 VALUE rb_newobj_longlife _((int));
 
