@@ -61,7 +61,6 @@ void st_add_direct _((st_table *, st_data_t, st_data_t));
 void st_free_table _((st_table *));
 void st_cleanup_safe _((st_table *, st_data_t));
 st_table *st_copy _((st_table *));
-int strhash(const char *);
 
 #define ST_NUMCMP	((int (*)()) 0)
 #define ST_NUMHASH	((int (*)()) -2)
