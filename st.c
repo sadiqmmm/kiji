@@ -481,14 +481,13 @@ st_foreach_map(table, map_key_func, map_value_func)
     int i;
 
     for(i = 0; i < table->num_bins; i++) {
-        for(ptr = table->bins[i]; ptr != 0;) {
+        for(ptr = table->bins[i]; ptr != 0; ptr = ptr->next) {
             new_key = (*map_key_func)(ptr->key);
             if(new_key != ptr->key && table->type->compare(new_key, ptr->key)) {
                 rb_bug("Key replaced with non-equal key");
             }
             ptr->key = new_key;
             ptr->record = (*map_value_func)(ptr->record);
-            ptr = ptr->next;
         }
     }
 }
