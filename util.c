@@ -644,6 +644,16 @@ ruby_strdup(str)
     return tmp;
 }
 
+/* Mask system strdup to fix tcmalloc issue on OS X*/
+#define strdup(s) strdup(s)
+char *
+strdup(str)
+    const char *str;
+{
+    return ruby_strdup(str);
+}
+#define strdup(s) ruby_strdup(s)
+
 char *
 ruby_getcwd()
 {

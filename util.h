@@ -54,6 +54,7 @@ void ruby_unsetenv _((const char*));
 #define unsetenv(name,val) ruby_unsetenv(name);
 
 char *ruby_strdup _((const char*));
+char *strdup _((const char*));
 #undef strdup
 #define strdup(s) ruby_strdup(s)
 

@@ -51,6 +51,9 @@ void *xcalloc _((long,long));
 void *xrealloc _((void*,long));
 void xfree _((void*));
 
+#define likely(x) __builtin_expect((x),1)
+#define unlikely(x) __builtin_expect((x),0)
+
 #if defined(__APPLE__)
     #define USING_SYSTEM_ALLOCATOR_LIBRARY
 #endif
