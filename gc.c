@@ -458,13 +458,19 @@ source_position_hash(source_position_t *x)
     return x->frames_hash;
 }
 
+static struct st_hash_type source_positions_type = {
+    compare: source_position_compare,
+    hash: source_position_hash
+};
+
 char *
 gc_debug_get_backtrace(source_position_t *source_pos)
 {
-    size_t len, backtrace_len = 0;
+    size_t len;
+    size_t backtrace_len = 0;
     char line_str[11];
     char cfunc_str[63];
-    const char *func_str;
+    char *func_str;
 
     /* FIXME Some source_pos aren't correctly marked; thus the guards. */
     while (source_pos && gc_debug_check_printable(source_pos->file) && source_pos->line > -2 && source_pos->line < 1000000) {
@@ -525,15 +531,12 @@ gc_debug_print_source_locations(source_position_t *source_pos, int *counts, FILE
     return ST_CONTINUE;
 }
 
-static struct st_hash_type source_positions_type = {
-    compare: source_position_compare,
-    hash: source_position_hash
-};
-
 static source_position_t *
 gc_debug_new_source_pos(char *file, int line, struct FRAME *frame)
 {
-    source_position_t *new_source_pos, *source_pos, *parent = 0;
+    source_position_t *new_source_pos;
+    source_position_t *source_pos;
+    source_position_t *parent;
     NODE *func_node;
     ID func = 0;
 
@@ -553,6 +556,9 @@ gc_debug_new_source_pos(char *file, int line, struct FRAME *frame)
                 func = frame->node->nd_mid;
             }
         }
+    }
+    else {
+        parent = 0;
     }
     if (!func) {
         func = ruby_sourcefunc;
@@ -580,15 +586,8 @@ gc_debug_new_source_pos(char *file, int line, struct FRAME *frame)
 
     if (!st_lookup(source_positions, (st_data_t)new_source_pos, (st_data_t *)&source_pos)) {
         source_pos = new_source_pos;
-        /* gc_debug_check_printable(source_pos->file); */
         st_insert(source_positions, (st_data_t)(source_pos), (long int) source_pos);
     } else {
-        /* if (!(new_source_pos->file == source_pos->file &&
-            new_source_pos->line == source_pos->line &&
-            new_source_pos->func == source_pos->func &&
-            new_source_pos->parent == source_pos->parent)) {
-                rb_bug("Hash collision");
-            } */
         free(new_source_pos);
     }
     return source_pos;
@@ -642,7 +641,6 @@ gc_debug_add_to_source_pos_table(st_table *table, RVALUE *p, int type)
     if (!st_lookup(table, (st_data_t)p->source_pos, (st_data_t *)&counts)) {
         counts = malloc(sizeof(int) * OBJ_TYPE_COUNT);
         MEMZERO(counts, int, OBJ_TYPE_COUNT);
-        /* gc_debug_check_printable(p->source_pos->file); */
         st_insert(table, (st_data_t)p->source_pos, (long int) counts);
     }
 
@@ -676,7 +674,7 @@ gc_debug_dump_source_pos_table(st_table *table, lifetime_t lt, char *suffix)
         GC_DEBUG_PRINTF("ERROR: Can't open %s for writing\n", fname);
         return;
     }
-    st_foreach(table, gc_debug_print_source_locations, (long int) output_file);
+    st_foreach(table, gc_debug_print_source_locations, (long int)output_file);
 }
 
 #endif /* GC_DEBUG */
@@ -1238,9 +1236,6 @@ mark_source_pos(source_position_t *source_pos)
     if (GC_DEBUG_ON && gc_debug_dump && longlife_collection && source_pos) {
         if (!rb_mark_table_contains_source_pos(source_pos)) {
             rb_mark_table_add_source_pos(source_pos);
-            /* if (!source_pos->file) {
-                rb_bug("source_pos->file is NULL");
-            } */
             mark_source_filename(source_pos->file);
             mark_source_pos(source_pos->parent);
         }
