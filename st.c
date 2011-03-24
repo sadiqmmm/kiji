@@ -40,7 +40,6 @@ static struct st_hash_type type_numhash = {
 };
 
 /* extern int strcmp(const char *, const char *); */
-int strhash(const char *);
 static struct st_hash_type type_strhash = {
     strcmp,
     strhash,
@@ -469,6 +468,29 @@ st_cleanup_safe(table, never)
 
     st_foreach(table, delete_never, never);
     table->num_entries = num_entries;
+}
+
+void
+st_foreach_map(table, map_key_func, map_value_func)
+    st_table *table;
+    st_data_t (*map_key_func)();
+    st_data_t (*map_value_func)();
+{
+    st_table_entry *ptr;
+    st_data_t new_key;
+    int i;
+
+    for(i = 0; i < table->num_bins; i++) {
+        for(ptr = table->bins[i]; ptr != 0;) {
+            new_key = (*map_key_func)(ptr->key);
+            if(new_key != ptr->key && table->type->compare(new_key, ptr->key)) {
+                rb_bug("Key replaced with non-equal key");
+            }
+            ptr->key = new_key;
+            ptr->record = (*map_value_func)(ptr->record);
+            ptr = ptr->next;
+        }
+    }
 }
 
 int
