@@ -672,8 +672,7 @@ rb_str_substr(str, beg, len)
 VALUE
 rb_str_char_ptr(VALUE str)
 {
-    printf("rb_str_char_ptr 0x%lx\n", (RSTRING(str)->ptr));
-    return Qnil;
+    return LONG2FIX(RSTRING(str)->ptr);
 }
 #endif
 

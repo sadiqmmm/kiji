@@ -122,8 +122,7 @@ VALUE
 rb_obj_ptr(obj)
     VALUE obj;
 {
-    printf("rb_obj_ptr 0x%lx\n", obj);
-    return Qnil;
+    return LONG2FIX(obj);
 }
 #endif
 
