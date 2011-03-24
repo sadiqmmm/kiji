@@ -257,7 +257,7 @@ char *rb_source_filename _((const char*));
 void rb_gc_mark_locations _((VALUE*, VALUE*));
 void rb_mark_tbl _((struct st_table*));
 void add_table_to_remembered_set _((struct st_table*));
-void maybe_add_to_longlife_recent_allocations _((void *));
+void maybe_add_to_longlife_recent_allocations _((VALUE));
 void rb_mark_set _((struct st_table*));
 void rb_mark_hash _((struct st_table*));
 void rb_gc_mark_maybe _((VALUE));

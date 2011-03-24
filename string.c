@@ -320,7 +320,7 @@ rb_str_shared_replace(str, str2)
     RSTRING(str2)->aux.capa = 0;
     FL_UNSET(str2, STR_NOCAPA);
     if (OBJ_TAINTED(str2)) OBJ_TAINT(str);
-    maybe_add_to_longlife_recent_allocations((void *)str);
+    maybe_add_to_longlife_recent_allocations(str);
 }
 
 static ID id_to_s;
@@ -556,7 +556,7 @@ rb_str_associate(str, add)
         }
         RSTRING(str)->aux.shared = add;
         FL_SET(str, STR_ASSOC);
-        maybe_add_to_longlife_recent_allocations((void *)str);
+        maybe_add_to_longlife_recent_allocations(str);
     }
 }
 
@@ -2396,7 +2396,7 @@ rb_str_replace(str, str2)
     }
 
     OBJ_INFECT(str, str2);
-    maybe_add_to_longlife_recent_allocations((void *) str);
+    maybe_add_to_longlife_recent_allocations(str);
     return str;
 }
 

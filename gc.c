@@ -78,7 +78,7 @@ static VALUE *gc_stack_limit;
 static void run_final();
 static VALUE nomem_error;
 static void garbage_collect(const char* reason);
-static void add_to_longlife_recent_allocations(void* ptr);
+static void add_to_longlife_recent_allocations(VALUE ptr);
 
 #define DEFAULT_LONGLIFE_LAZINESS 0.05
 static float longlife_laziness = DEFAULT_LONGLIFE_LAZINESS;
@@ -996,7 +996,7 @@ rb_newobj_longlife(int type)
     obj = pop_freelist(&longlife_heaps_space);
     RBASIC(obj)->flags |= (FL_LONGLIFE|FL_MOVE);
 
-    add_to_longlife_recent_allocations((void*) obj);
+    add_to_longlife_recent_allocations(obj);
 
     allocated_objects++;
     return obj;
@@ -1344,7 +1344,7 @@ is_pointer_to_longlife_heap(ptr)
 }
 
 static void
-add_to_longlife_recent_allocations(void *ptr)
+add_to_longlife_recent_allocations(VALUE ptr)
 {
     longlife_recent_allocations_set_t *tmp;
     if (longlife_recent_allocations_set_freed) {
@@ -1355,13 +1355,13 @@ add_to_longlife_recent_allocations(void *ptr)
         tmp = ALLOC(longlife_recent_allocations_set_t);
     }
     tmp->next = longlife_recent_allocations_set_ptr;
-    tmp->obj = ptr;
+    tmp->obj = (RVALUE *)ptr;
     longlife_recent_allocations_set_ptr = tmp;
 }
 
 /* Call this if you mutate an object that might be on the longlife heap. */
 void
-maybe_add_to_longlife_recent_allocations(void *ptr)
+maybe_add_to_longlife_recent_allocations(VALUE ptr)
 {
     if (ptr && OBJ_LONGLIVED(ptr)) {
         add_to_longlife_recent_allocations(ptr);
