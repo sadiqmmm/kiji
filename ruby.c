@@ -986,10 +986,6 @@ load_file(fname, script)
     else if (f != rb_stdin) {
 	rb_io_close(f);
     }
-
-    if (ruby_parser_stack_on_heap()) {
-        rb_gc();
-    }
 }
 
 void

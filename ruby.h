@@ -307,9 +307,13 @@ char *rb_str2cstr _((VALUE,long*));
                      RSTRING(x)->ptr[0]:(char)(NUM2INT(x)&0xff))
 #define CHR2FIX(x) INT2FIX((long)((x)&0xff))
 
-VALUE rb_newobj_longlife _((int));
+RUBY_EXTERN int ruby_in_longlife_context;
+
 VALUE rb_newobj_eden _((int));
-void rb_register_newobj _((int));
+VALUE rb_newobj_longlife _((int));
+
+/* Gem compatibility only. Do not use. */
+VALUE rb_newobj _((int));
 
 // Default allocator
 #define NEWOBJ(obj,type) type *obj = (type*)rb_newobj_eden(-1)
@@ -318,12 +322,29 @@ void rb_register_newobj _((int));
 #define NEWOBJ_LONGLIFE(obj,type) type *obj = (type*)rb_newobj_longlife(-1)
 #define NEWOBJ_EDEN(obj,type) type *obj = (type*)rb_newobj_eden(-1)
 
+#ifdef TRACE_NEWOBJ
 #define OBJSETUP(obj,c,t) do {\
     rb_register_newobj(t);\
-    RBASIC(obj)->flags = (t);\
+    RBASIC(obj)->flags = (t | (RBASIC(obj)->flags & (FL_MOVE|FL_LONGLIFE)));\
     RBASIC(obj)->klass = (c);\
     if (rb_safe_level() >= 3) FL_SET(obj, FL_TAINT);\
 } while (0)
+
+typedef struct object_stats {
+  int newobj_calls;
+  int types[T_UNKNOWN];
+} object_stats_t;
+
+void rb_register_newobj _((int));
+object_stats_t* rb_object_stats();
+#else
+#define OBJSETUP(obj,c,t) do {\
+    RBASIC(obj)->flags = (t | (RBASIC(obj)->flags & (FL_MOVE|FL_LONGLIFE)));\
+    RBASIC(obj)->klass = (c);\
+    if (rb_safe_level() >= 3) FL_SET(obj, FL_TAINT);\
+} while (0)
+#endif /* TRACE_NEWOBJ */
+
 #define CLONESETUP(clone,obj) do {\
     OBJSETUP(clone,rb_singleton_class_clone((VALUE)obj),RBASIC(obj)->flags);\
     rb_singleton_class_attached(RBASIC(clone)->klass, (VALUE)clone);\
@@ -483,13 +504,13 @@ struct RBignum {
 #define RFILE(obj)   (R_CAST(RFile)(obj))
 
 #define FL_SINGLETON FL_USER0
-#define FL_MARK           (1<<6)
+#define FL_LONGLIFE       (1<<6)
 #define FL_FINALIZE       (1<<7)
 #define FL_TAINT          (1<<8)
 #define FL_EXIVAR         (1<<9)
 #define FL_FREEZE         (1<<10)
 #define FL_REMEMBERED_SET (1<<11)
-#define FL_LONGLIFE       (1<<12)
+#define FL_MOVE           (1<<12)
 
 #define FL_USHIFT    13
 
@@ -500,7 +521,6 @@ struct RBignum {
 #define FL_USER4     (1<<(FL_USHIFT+4))
 #define FL_USER5     (1<<(FL_USHIFT+5))
 #define FL_USER6     (1<<(FL_USHIFT+6))
-#define FL_USER7     (1<<(FL_USHIFT+7))
 
 #define FL_UMASK  (0xff<<FL_USHIFT)
 
@@ -518,6 +538,13 @@ struct RBignum {
 
 #define OBJ_FROZEN(x) FL_TEST((x), FL_FREEZE)
 #define OBJ_FREEZE(x) FL_SET((x), FL_FREEZE)
+#define OBJ_UNFREEZE(x) FL_UNSET((x), FL_FREEZE)
+
+#define OBJ_LONGLIVED(x) FL_TEST((x), FL_LONGLIFE)
+#define OBJ_LONGLIFE(x) FL_SET((x), FL_LONGLIFE)
+
+#define OBJ_MOVED(x) FL_TEST((x), FL_MOVE)
+#define OBJ_MOVE(x) FL_SET((x), FL_MOVE)
 
 #define ALLOC_N(type,n) (type*)xmalloc(sizeof(type)*(n))
 #define ALLOC(type) (type*)xmalloc(sizeof(type))
@@ -808,12 +835,5 @@ void ruby_native_thread_kill _((int));
 #endif
 }  /* extern "C" { */
 #endif
-
-typedef struct object_stats {
-  int newobj_calls;
-  int types[T_UNKNOWN];
-} object_stats_t;
-
-object_stats_t* rb_object_stats();
 
 #endif /* ifndef RUBY_H */

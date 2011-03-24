@@ -268,8 +268,6 @@ rb_reg_check(re)
     }
 }
 
-extern int ruby_in_compile;
-
 static void
 rb_reg_expr_str(str, s, len)
     VALUE str;

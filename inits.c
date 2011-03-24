@@ -35,7 +35,6 @@ void Init_Numeric _((void));
 void Init_Object _((void));
 void Init_pack _((void));
 void Init_Precision _((void));
-void Init_sym _((void));
 void Init_process _((void));
 void Init_Random _((void));
 void Init_Range _((void));
@@ -50,7 +49,6 @@ void Init_version _((void));
 void
 rb_call_inits()
 {
-    Init_sym();
     Init_var_tables();
     Init_Object();
     Init_Comparable();
