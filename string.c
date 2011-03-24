@@ -64,7 +64,7 @@ str_alloc_eden(klass)
     VALUE klass;
 {
     struct RString *str;
-    str = ( struct RString*)rb_newobj_eden(-1);
+    str = (struct RString*)rb_newobj_eden(-1);
     OBJSETUP(str, klass, T_STRING);
 
     str->ptr = 0;
@@ -79,7 +79,7 @@ str_alloc_longlife(klass)
     VALUE klass;
 {
     struct RString *str;
-    str = ( struct RString*)rb_newobj_longlife(-1);
+    str = (struct RString*)rb_newobj_longlife(-1);
     OBJSETUP(str, klass, T_STRING);
 
     str->ptr = 0;
@@ -683,7 +683,7 @@ rb_str_move(str2)
     VALUE str;
 
     int len = RSTRING(str2)->len;
-    char * ptr = RSTRING(str2)->ptr;
+    char *ptr = RSTRING(str2)->ptr;
 
     str = str_alloc_longlife(rb_obj_class(str2));
     RSTRING(str)->len = len;
