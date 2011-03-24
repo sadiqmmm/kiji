@@ -33,6 +33,10 @@
 #include "st.h"
 #include "dln.h"
 
+#ifdef GC_DEBUG
+RUBY_EXTERN int gc_debug_dump;
+#endif
+
 #ifdef __APPLE__
 #include <crt_externs.h>
 #endif
@@ -257,13 +261,6 @@ VALUE (*ruby_sandbox_save)_((rb_thread_t));
 VALUE (*ruby_sandbox_restore)_((rb_thread_t));
 NODE* ruby_current_node;
 
-#if 0
-#define SET_CURRENT_SOURCE() (ruby_sourcefile = ruby_current_node->nd_file, \
-			      ruby_sourceline = nd_line(ruby_current_node))
-#else
-#define SET_CURRENT_SOURCE() ((void)0)
-#endif
-
 void
 ruby_set_current_source()
 {
@@ -272,13 +269,6 @@ ruby_set_current_source()
 	ruby_sourceline = nd_line(ruby_current_node);
     }
 }
-
-#ifdef MBARI_API
-#define SET_METHOD_SOURCE()  ruby_set_current_source()
-#else
-#define SET_METHOD_SOURCE()  (void)0
-#endif
-
 
 int ruby_safe_level = 0;
 /* safe-level:
@@ -500,7 +490,7 @@ rb_undef_alloc_func(klass)
     rb_add_method(rb_singleton_class(klass), ID_ALLOCATOR, 0, NOEX_UNDEF);
 }
 
-static NODE*
+NODE*
 search_method(klass, id, origin)
     VALUE klass, *origin;
     ID id;
@@ -764,7 +754,7 @@ rb_attr(klass, id, read, write, ex)
     if (!name) {
 	rb_raise(rb_eArgError, "argument needs to be symbol or string");
     }
-    SET_METHOD_SOURCE();
+    GC_DEBUG_SET_SOURCE
     len = strlen(name)+2;
     buf = ALLOCA_N(char,len);
     snprintf(buf, len, "@%s", name);
@@ -776,8 +766,6 @@ rb_attr(klass, id, read, write, ex)
 	rb_add_method(klass, rb_id_attrset(id), NEW_ATTRSET(attriv), noex);
     }
 }
-
-extern int ruby_in_compile;
 
 VALUE ruby_errinfo = Qnil;
 extern NODE *ruby_eval_tree_begin;
@@ -796,16 +784,31 @@ static struct SCOPE *top_scope;
 
 static unsigned long frame_unique = 0;
 
+#ifdef GC_DEBUG
+#define CREATE_FRAME_SOURCE_POS(pframe) \
+    gc_debug_get_frame_source_pos(pframe);
+#define CREATE_FRAME_SOURCE_POS_FOR_PUSH(pframe) \
+    _frame.self = 0; \
+    _frame.last_func = 0; \
+    _frame.orig_func = 0; \
+    _frame.last_class = 0; \
+    CREATE_FRAME_SOURCE_POS(pframe);
+#else
+#define CREATE_FRAME_SOURCE_POS(pframe)
+#define CREATE_FRAME_SOURCE_POS_FOR_PUSH(pframe)
+#endif
+
 #define PUSH_FRAME() do {		\
     volatile struct FRAME _frame;	\
     _frame.prev = ruby_frame;		\
-    _frame.tmp  = 0;			\
     _frame.node = ruby_current_node;	\
     _frame.iter = ruby_iter->iter;	\
+    _frame.tmp  = 0; \
     _frame.argc = 0;			\
     _frame.flags = 0;			\
     _frame.uniq = frame_unique++;	\
-    ruby_frame = &_frame
+    CREATE_FRAME_SOURCE_POS_FOR_PUSH((struct FRAME *)&_frame) \
+    ruby_frame = &_frame;
 
 #define POP_FRAME()  			\
     ruby_current_node = _frame.node;	\
@@ -849,6 +852,7 @@ static unsigned long block_unique = 1;
     _block.frame.node = ruby_current_node;\
     _block.scope = ruby_scope;		\
     _block.prev = ruby_block;		\
+    CREATE_FRAME_SOURCE_POS(&_block.frame);     \
     _block.outer = ruby_block;		\
     _block.iter = ruby_iter->iter;	\
     _block.vmode = scope_vmode;		\
@@ -1418,6 +1422,21 @@ ruby_native_thread_kill(sig)
 # endif
 #endif
 
+void Init_sym _((void));
+void Init_source_filenames _((void));
+void Init_source_positions _((void));
+
+#ifdef GC_DEBUG
+#define SET_GC_DEBUG_SOURCEFUNC(x) \
+        ID old_ruby_sourcefunc = ruby_sourcefunc; \
+    ruby_sourcefunc = rb_intern(x);
+#define RESET_GC_DEBUG_SOURCEFUNC \
+    ruby_sourcefunc = old_ruby_sourcefunc;
+#else
+#define SET_GC_DEBUG_SOURCEFUNC(x)
+#define RESET_GC_DEBUG_SOURCEFUNC
+#endif
+
 void
 ruby_init()
 {
@@ -1444,6 +1463,15 @@ ruby_init()
 
     Init_stack((void*)&state);
     Init_heap();
+    Init_sym();
+    Init_source_filenames();
+    ruby_current_node = 0;
+#ifdef GC_DEBUG
+    if (GC_DEBUG_ON && gc_debug_dump) {
+        Init_source_positions();
+    }
+    SET_GC_DEBUG_SOURCEFUNC("<ruby_init>")
+#endif
     PUSH_SCOPE();
     ruby_scope->local_vars = 0;
     ruby_scope->local_tbl  = 0;
@@ -1475,6 +1503,7 @@ ruby_init()
     POP_SCOPE();
     ruby_scope = top_scope;
     top_scope->flags &= ~SCOPE_NOSTACK;
+    RESET_GC_DEBUG_SOURCEFUNC
     ruby_running = 1;
 }
 
@@ -1583,7 +1612,8 @@ ruby_options(argc, argv)
     char **argv;
 {
     int state;
-
+    ruby_current_node = 0;
+    SET_GC_DEBUG_SOURCEFUNC("<ruby_options>")
     Init_stack((void*)&state);
     PUSH_TAG(PROT_EMPTY);
     if ((state = EXEC_TAG()) == 0) {
@@ -1595,6 +1625,7 @@ ruby_options(argc, argv)
 	exit(error_handle(state));
     }
     POP_TAG();
+    RESET_GC_DEBUG_SOURCEFUNC
 }
 
 void rb_exec_end_proc _((void));
@@ -1639,6 +1670,7 @@ ruby_cleanup(exArg)
     errs[1] = ruby_errinfo;
     ruby_safe_level = 0;
     Init_stack((void *)&state);
+    SET_GC_DEBUG_SOURCEFUNC("<ruby_cleanup>")
     ruby_finalize_0();
     errs[0] = ruby_errinfo;
     PUSH_TAG(PROT_EMPTY);
@@ -1655,6 +1687,7 @@ ruby_cleanup(exArg)
     ex = error_handle(ex);
     ruby_finalize_1();
     POP_TAG();
+    RESET_GC_DEBUG_SOURCEFUNC
 
     for (nerr = 0; nerr < sizeof(errs) / sizeof(errs[0]); ++nerr) {
 	VALUE err = errs[nerr];
@@ -1692,6 +1725,7 @@ ruby_exec_internal()
 {
     int state;
 
+    SET_GC_DEBUG_SOURCEFUNC("<ruby_exec_internal>");
     PUSH_TAG(PROT_EMPTY);
     PUSH_ITER(ITER_NOT);
     /* default visibility is private at toplevel */
@@ -1701,6 +1735,7 @@ ruby_exec_internal()
     }
     POP_ITER();
     POP_TAG();
+    RESET_GC_DEBUG_SOURCEFUNC
     return state;
 }
 
@@ -1760,9 +1795,10 @@ rb_eval_string(str)
 
     ruby_current_node = 0;
     ruby_sourcefile = rb_source_filename("(eval)");
+    SET_GC_DEBUG_SOURCEFUNC("<rb_eval_string>")
     v = eval(ruby_top_self, rb_str_new2(str), Qnil, 0, 0);
     ruby_current_node = oldsrc;
-
+    RESET_GC_DEBUG_SOURCEFUNC
     return v;
 }
 
@@ -2309,7 +2345,7 @@ rb_copy_node_scope(node, rval)
 {
     NODE *copy;
 
-    SET_METHOD_SOURCE();
+    GC_DEBUG_SET_SOURCE
     copy=NEW_NODE(NODE_SCOPE,0,rval,node->nd_next);
 
     if (node->nd_tbl) {
@@ -2823,7 +2859,7 @@ call_trace_func(event, node, self, id, klass)
 
     tracing = 0;
     ruby_current_node = node_save;
-    SET_CURRENT_SOURCE();
+    GC_DEBUG_SET_SOURCE
     if (state) JUMP_TAG(state);
 }
 
@@ -3220,7 +3256,7 @@ eval_node_volatile(iter, VALUE)
 	  result = rb_eval(self, node->nd_iter);
 	  END_CALLARGS;
 	  ruby_current_node = (NODE *)node;
-	  SET_CURRENT_SOURCE();
+          GC_DEBUG_SET_SOURCE
 	  result = rb_call(CLASS_OF(result),result,each,0,0,0,self);
       }
       POP_ITER();
@@ -3374,7 +3410,7 @@ eval_node(attrasgn, VALUE)
   END_CALLARGS;
 
   ruby_current_node = node;
-  SET_CURRENT_SOURCE();
+  GC_DEBUG_SET_SOURCE
   rb_call(CLASS_OF(recv),recv,node->nd_mid,argc,argv,scope,self);
   return argv[argc-1];
 }
@@ -3392,7 +3428,7 @@ eval_node(call, VALUE)
   END_CALLARGS;
 
   ruby_current_node = node;
-  SET_CURRENT_SOURCE();
+  GC_DEBUG_SET_SOURCE
   return rb_call(CLASS_OF(recv),recv,node->nd_mid,argc,argv,0,self);
 }
 
@@ -3407,7 +3443,7 @@ eval_node(fcall, VALUE)
   END_CALLARGS;
 
   ruby_current_node = node;
-  SET_CURRENT_SOURCE();
+  GC_DEBUG_SET_SOURCE
   return rb_call(CLASS_OF(self),self,node->nd_mid,argc,argv,1,self);
 }
 
@@ -3452,7 +3488,7 @@ eval_node(super, VALUE)
       ruby_current_node = node;
   }
 
-  SET_CURRENT_SOURCE();
+  GC_DEBUG_SET_SOURCE
   return rb_call_super(argc, argv);
 }
 
@@ -3619,6 +3655,7 @@ eval_node(slit, VALUE)
 			  node->nd_cflag);
       nd_set_type(node, NODE_LIT);
       RB_GC_GUARD(str);  /* ensure str is not GC'd in rb_reg_new */
+      maybe_add_to_longlife_recent_allocations(node);
       return node->nd_lit = str2;
     case NODE_LIT:
       /* other thread may replace NODE_DREGX_ONCE to NODE_LIT */
@@ -3998,7 +4035,7 @@ again:
 	else {
 	    result = Qundef;	/* no arg */
 	}
-	SET_CURRENT_SOURCE();
+        GC_DEBUG_SET_SOURCE
 	result = rb_yield_0(result, 0, 0, 0, node->nd_state);
 	break;
 
@@ -4070,7 +4107,7 @@ again:
 	break;
 
       case NODE_VCALL:
-	SET_CURRENT_SOURCE();
+        GC_DEBUG_SET_SOURCE
 	result = rb_call(CLASS_OF(self),self,node->nd_mid,0,0,2,self);
 	break;
 
@@ -4127,8 +4164,10 @@ again:
 	break;
 
       case NODE_GASGN:
+        ruby_in_longlife_context++;
 	result = rb_eval(self, node->nd_value);
 	rb_gvar_set(node->nd_entry, result);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_IASGN:
@@ -4137,21 +4176,27 @@ again:
 	break;
 
       case NODE_CDECL:
+        ruby_in_longlife_context++;
         result = rb_eval(self, node->nd_value);
         eval_cdecl(self, node, result);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_CVDECL:
 	if (NIL_P(ruby_cbase)) {
 	    rb_raise(rb_eTypeError, "no class/module to define class variable");
 	}
+        ruby_in_longlife_context++;
         result = rb_eval(self, node->nd_value);
         eval_cvar_set(node, result, Qtrue);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_CVASGN:
+        ruby_in_longlife_context++;
         result = rb_eval(self, node->nd_value);
         eval_cvar_set(node, result, Qfalse);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_LVAR:
@@ -5125,6 +5170,7 @@ rb_yield_0(val, self, klass, flags, avalue)
     frame = block->frame;
     frame.prev = ruby_frame;
     frame.node = cnode;
+    CREATE_FRAME_SOURCE_POS(&frame);
     ruby_frame = &(frame);
     old_cref = (VALUE)ruby_cref;
     ruby_cref = block->cref;
@@ -5466,7 +5512,9 @@ assign(self, lhs, val, pcall)
     }
     switch (nd_type(lhs)) {
       case NODE_GASGN:
+        ruby_in_longlife_context++;
 	rb_gvar_set(lhs->nd_entry, val);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_IASGN:
@@ -5488,27 +5536,35 @@ assign(self, lhs, val, pcall)
 	break;
 
       case NODE_CDECL:
+        ruby_in_longlife_context++;
 	if (lhs->nd_vid == 0) {
 	    rb_const_set(class_prefix(self, lhs->nd_else), lhs->nd_else->nd_mid, val);
 	}
 	else {
 	    rb_const_set(ruby_cbase, lhs->nd_vid, val);
 	}
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_CVDECL:
+        ruby_in_longlife_context++;
 	if (RTEST(ruby_verbose) && FL_TEST(ruby_cbase, FL_SINGLETON)) {
 	    rb_warn("declaring singleton class variable");
 	}
 	rb_cvar_set(cvar_cbase(), lhs->nd_vid, val, Qtrue);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_CVASGN:
+        ruby_in_longlife_context++;
 	rb_cvar_set(cvar_cbase(), lhs->nd_vid, val, Qfalse);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_MASGN:
+        ruby_in_longlife_context++;
 	massign(self, lhs, svalue_to_mrhs(val, lhs->nd_head), pcall);
+        ruby_in_longlife_context--;
 	break;
 
       case NODE_CALL:
@@ -5527,7 +5583,7 @@ assign(self, lhs, val, pcall)
 	    if (!lhs->nd_args) {
 		/* attr set */
 		ruby_current_node = lhs;
-		SET_CURRENT_SOURCE();
+                GC_DEBUG_SET_SOURCE
 		rb_call(CLASS_OF(recv), recv, lhs->nd_mid, 1, &val, scope, self);
 	    }
 	    else {
@@ -5537,7 +5593,7 @@ assign(self, lhs, val, pcall)
 		args = rb_eval(self, lhs->nd_args);
 		rb_ary_push(args, val);
 		ruby_current_node = lhs;
-		SET_CURRENT_SOURCE();
+                GC_DEBUG_SET_SOURCE
 		rb_call(CLASS_OF(recv), recv, lhs->nd_mid,
 			RARRAY(args)->len, RARRAY(args)->ptr, scope, self);
 	    }
@@ -6710,6 +6766,7 @@ eval(self, src, scope, file, line)
     if (TYPE(ruby_class) == T_ICLASS) {
 	ruby_class = RBASIC(ruby_class)->klass;
     }
+    SET_GC_DEBUG_SOURCEFUNC("<eval>")
     PUSH_TAG(PROT_EMPTY);
     if ((state = EXEC_TAG()) == 0) {
 	NODE *node;
@@ -6726,6 +6783,7 @@ eval(self, src, scope, file, line)
 	result = eval_tree(self, node);
     }
     POP_TAG();
+    RESET_GC_DEBUG_SOURCEFUNC
     POP_CLASS();
     ruby_in_eval--;
     if (!NIL_P(scope)) {
@@ -10022,6 +10080,7 @@ mproc(method)
     /* emulate ruby's method call */
     PUSH_ITER(ITER_CUR);
     PUSH_FRAME();
+    _frame.last_class = 0;
     proc = rb_block_proc();
     POP_FRAME();
     POP_ITER();
@@ -10151,7 +10210,7 @@ rb_mod_define_method(argc, argv, mod)
     else {
 	rb_raise(rb_eArgError, "wrong number of arguments (%d for 1)", argc);
     }
-    SET_METHOD_SOURCE();
+    GC_DEBUG_SET_SOURCE
     if (RDATA(body)->dmark == (RUBY_DATA_FUNC)bm_mark) {
 	node = NEW_DMETHOD(method_unbind(body));
     }

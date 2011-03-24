@@ -59,12 +59,12 @@ str_frozen_check(s)
     }
 }
 
-static VALUE str_alloc _((VALUE));
 static VALUE
-str_alloc(klass)
+str_alloc_eden(klass)
     VALUE klass;
 {
-    NEWOBJ(str, struct RString);
+    struct RString *str;
+    str = ( struct RString*)rb_newobj_eden(-1);
     OBJSETUP(str, klass, T_STRING);
 
     str->ptr = 0;
@@ -72,6 +72,32 @@ str_alloc(klass)
     str->aux.capa = 0;
 
     return (VALUE)str;
+}
+
+static VALUE
+str_alloc_longlife(klass)
+    VALUE klass;
+{
+    struct RString *str;
+    str = ( struct RString*)rb_newobj_longlife(-1);
+    OBJSETUP(str, klass, T_STRING);
+
+    str->ptr = 0;
+    str->len = 0;
+    str->aux.capa = 0;
+
+    return (VALUE)str;
+}
+
+static VALUE
+str_alloc(klass)
+    VALUE klass;
+{
+    if (ruby_in_longlife_context) {
+        return str_alloc_longlife(klass);
+    } else {
+        return str_alloc_eden(klass);
+    }
 }
 
 static VALUE
@@ -175,6 +201,7 @@ str_new4(klass, str)
     else {
 	FL_SET(str, ELTS_SHARED);
 	RSTRING(str)->aux.shared = str2;
+        maybe_add_to_longlife_recent_allocations(str);
     }
 
     return str2;
@@ -293,6 +320,7 @@ rb_str_shared_replace(str, str2)
     RSTRING(str2)->aux.capa = 0;
     FL_UNSET(str2, STR_NOCAPA);
     if (OBJ_TAINTED(str2)) OBJ_TAINT(str);
+    maybe_add_to_longlife_recent_allocations((void *)str);
 }
 
 static ID id_to_s;
@@ -324,7 +352,6 @@ rb_str_dup(str)
     rb_str_replace(dup, str);
     return dup;
 }
-
 
 /*
  *  call-seq:
@@ -529,6 +556,7 @@ rb_str_associate(str, add)
 	}
 	RSTRING(str)->aux.shared = add;
 	FL_SET(str, STR_ASSOC);
+        maybe_add_to_longlife_recent_allocations((void *)str);
     }
 }
 
@@ -640,11 +668,39 @@ rb_str_substr(str, beg, len)
     return str2;
 }
 
+#ifdef GC_DEBUG
 VALUE
-rb_str_freeze(str)
-    VALUE str;
+rb_str_char_ptr(VALUE str)
 {
-    return rb_obj_freeze(str);
+    printf("rb_str_char_ptr 0x%lx\n", (RSTRING(str)->ptr));
+    return Qnil;
+}
+#endif
+
+VALUE
+rb_str_move(str2)
+    VALUE str2;
+{
+    VALUE str;
+
+    int len = RSTRING(str2)->len;
+    char * ptr = RSTRING(str2)->ptr;
+
+    str = str_alloc_longlife(rb_obj_class(str2));
+    RSTRING(str)->len = len;
+    RSTRING(str)->aux.capa = len;
+    RSTRING(str)->ptr = ALLOC_N(char,len+1);
+    if (ptr) {
+        memcpy(RSTRING(str)->ptr, ptr, len);
+    }
+    RSTRING(str)->ptr[len] = '\0';
+
+    OBJ_FREEZE(str2);
+    OBJ_INFECT(str, str2);
+#ifdef GC_DEBUG
+    longlife_moved_objs_count++;
+#endif
+    return str;
 }
 
 VALUE
@@ -2057,7 +2113,6 @@ rb_str_sub_bang(argc, argv, str)
 	RSTRING(str)->len += RSTRING(repl)->len - plen;
 	RSTRING(str)->ptr[RSTRING(str)->len] = '\0';
 	if (tainted) OBJ_TAINT(str);
-
 	return str;
     }
     return Qnil;
@@ -2341,6 +2396,7 @@ rb_str_replace(str, str2)
     }
 
     OBJ_INFECT(str, str2);
+    maybe_add_to_longlife_recent_allocations((void *) str);
     return str;
 }
 
@@ -5056,6 +5112,10 @@ Init_String()
 
     rb_define_method(rb_cString, "partition", rb_str_partition, -1);
     rb_define_method(rb_cString, "rpartition", rb_str_rpartition, 1);
+
+#ifdef GC_DEBUG
+    rb_define_method(rb_cString, "__char_ptr__", rb_str_char_ptr, 0);
+#endif
 
     id_to_s = rb_intern("to_s");
 

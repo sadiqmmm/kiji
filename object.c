@@ -31,6 +31,10 @@ VALUE rb_cTrueClass;
 VALUE rb_cFalseClass;
 VALUE rb_cSymbol;
 
+#ifdef GC_DEBUG
+int longlife_moved_objs_count = 0;
+#endif
+
 static ID id_eq, id_eql, id_inspect, id_init_copy;
 
 /*
@@ -112,6 +116,16 @@ rb_obj_id_obsolete(obj)
     rb_warn("Object#id will be deprecated; use Object#object_id");
     return rb_obj_id(obj);
 }
+
+#ifdef GC_DEBUG
+VALUE
+rb_obj_ptr(obj)
+    VALUE obj;
+{
+    printf("rb_obj_ptr 0x%lx\n", obj);
+    return Qnil;
+}
+#endif
 
 VALUE
 rb_class_real(cl)
@@ -228,6 +242,33 @@ rb_obj_clone(obj)
     RBASIC(clone)->flags |= RBASIC(obj)->flags & FL_FREEZE;
 
     return clone;
+}
+
+/* :nodoc: */
+VALUE
+rb_obj_freeze(VALUE obj)
+{
+    int i;
+    if (!OBJ_MOVED(obj)) {
+        obj = rb_obj_move(obj);
+        switch (TYPE(obj)) {
+          case T_HASH:
+            st_foreach_map(RHASH(obj)->tbl, rb_obj_freeze, rb_obj_freeze);
+            break;
+          case T_ARRAY:
+            for (i = 0; i < RARRAY(obj)->len; i++) {
+                rb_ary_store(obj, i, rb_obj_freeze(rb_ary_entry(obj, i)));
+            }
+            break;
+        }
+    }
+    if (!OBJ_FROZEN(obj)) {
+        if (rb_safe_level() >= 4 && !OBJ_TAINTED(obj)) {
+            rb_raise(rb_eSecurityError, "Insecure: can't freeze object");
+        }
+        OBJ_FREEZE(obj);
+    }
+    return obj;
 }
 
 /*
@@ -750,14 +791,16 @@ rb_obj_infect(obj1, obj2)
  */
 
 VALUE
-rb_obj_freeze(obj)
+rb_obj_move(obj)
     VALUE obj;
 {
-    if (!OBJ_FROZEN(obj)) {
-	if (rb_safe_level() >= 4 && !OBJ_TAINTED(obj)) {
-	    rb_raise(rb_eSecurityError, "Insecure: can't freeze object");
+    if (!OBJ_MOVED(obj)) {
+        if (TYPE(obj) == T_STRING) {
+            obj = rb_str_move(obj);
+        } else {
+            /* Currently has no real effect */
+            OBJ_MOVE(obj);
 	}
-	OBJ_FREEZE(obj);
     }
     return obj;
 }
@@ -781,6 +824,37 @@ rb_obj_frozen_p(obj)
     return Qfalse;
 }
 
+/*
+ *  call-seq:
+ *     obj.moved?    => true or false
+ *
+ *  Returns the moved status of <i>obj</i>.
+ *
+ */
+
+static VALUE
+rb_obj_moved_p(obj)
+    VALUE obj;
+{
+    if (OBJ_MOVED(obj)) return Qtrue;
+    return Qfalse;
+}
+
+/*
+ *  call-seq:
+ *     obj.longlived?    => true or false
+ *
+ *  Returns whether <i>obj</i> is on the longlife heap.
+ *
+ */
+
+static VALUE
+rb_obj_longlived_p(obj)
+    VALUE obj;
+{
+    if (OBJ_LONGLIVED(obj)) return Qtrue;
+    return Qfalse;
+}
 
 /*
  * Document-class: NilClass
@@ -2722,6 +2796,7 @@ Init_Object()
     rb_define_method(rb_mKernel, "class", rb_obj_class, 0);
 
     rb_define_method(rb_mKernel, "clone", rb_obj_clone, 0);
+    rb_define_method(rb_mKernel, "clone_string_values", rb_obj_clone, 0);
     rb_define_method(rb_mKernel, "dup", rb_obj_dup, 0);
     rb_define_method(rb_mKernel, "initialize_copy", rb_obj_init_copy, 1);
 
@@ -2730,6 +2805,8 @@ Init_Object()
     rb_define_method(rb_mKernel, "untaint", rb_obj_untaint, 0);
     rb_define_method(rb_mKernel, "freeze", rb_obj_freeze, 0);
     rb_define_method(rb_mKernel, "frozen?", rb_obj_frozen_p, 0);
+    rb_define_method(rb_mKernel, "moved?", rb_obj_moved_p, 0);
+    rb_define_method(rb_mKernel, "longlived?", rb_obj_longlived_p, 0);
 
     rb_define_method(rb_mKernel, "to_a", rb_any_to_a, 0); /* to be removed */
     rb_define_method(rb_mKernel, "to_s", rb_any_to_s, 0);
@@ -2878,6 +2955,10 @@ Init_Object()
     rb_undef_alloc_func(rb_cFalseClass);
     rb_undef_method(CLASS_OF(rb_cFalseClass), "new");
     rb_define_global_const("FALSE", Qfalse);
+
+#ifdef GC_DEBUG
+    rb_define_method(rb_mKernel, "__ptr__", rb_obj_ptr, 0);
+#endif
 
     id_eq = rb_intern("==");
     id_eql = rb_intern("eql?");
