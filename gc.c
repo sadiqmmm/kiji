@@ -103,6 +103,7 @@ static const char lifetime_name[][9] = { "Longlife", "Eden" };
 
 #ifdef GC_DEBUG
 static char *gc_data_file_name;
+static char *gc_dump_file_pattern;
 static char *backtrace_str_buffer = 0;
 static int backtrace_str_buffer_len = 0;
 
@@ -652,7 +653,6 @@ static void
 gc_debug_dump_source_pos_table(st_table *table, lifetime_t lt, char *suffix)
 {
     char fname[255];
-    char cmd[512];
 
     /* You can parse the output file with simple Unix tools. For example, to
         see objects that remain on the eden heap after collection, coalesce
@@ -668,7 +668,7 @@ gc_debug_dump_source_pos_table(st_table *table, lifetime_t lt, char *suffix)
 
     */
 
-    snprintf(fname, 255, "/tmp/rb_gc_debug_objects.%s.%s.txt", lifetime_name_lower[lt], suffix);
+    snprintf(fname, 255, gc_dump_file_pattern, lifetime_name_lower[lt], suffix);
     FILE* output_file = fopen(fname, "w");
     if (!output_file) {
         GC_DEBUG_PRINTF("ERROR: Can't open %s for writing\n", fname);
@@ -773,6 +773,11 @@ static void set_gc_parameters()
           gc_data_file_name = "/dev/stderr";
           gc_data_file = fopen(gc_data_file_name, "w");
       }
+    }
+
+    gc_dump_file_pattern = getenv("RUBY_GC_DUMP_FILE_PATTERN");
+    if(gc_dump_file_pattern == NULL) {
+        gc_dump_file_pattern = "/tmp/rb_gc_debug_objects.%s.%s.txt";
     }
 #endif
 
