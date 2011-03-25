@@ -856,6 +856,8 @@ add_heap(heaps_space_t *heaps_space)
                 p = (struct heaps_slot *)realloc(heaps, length);
                 if (p) {
                   heaps = p;
+                  /* Clear the last_heap cache to remove potentially erroneous references. */
+                  rb_mark_table_prepare();
                 }
             }
             else {
