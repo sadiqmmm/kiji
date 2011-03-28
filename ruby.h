@@ -348,28 +348,11 @@ VALUE rb_newobj _((int));
 #define NEWOBJ_LONGLIFE(obj,type) type *obj = (type*)rb_newobj_longlife(-1)
 #define NEWOBJ_EDEN(obj,type) type *obj = (type*)rb_newobj_eden(-1)
 
-#ifdef TRACE_NEWOBJ
-#define OBJSETUP(obj,c,t) do {\
-    rb_register_newobj(t);\
-    RBASIC(obj)->flags = (t | (RBASIC(obj)->flags & (FL_MOVE|FL_LONGLIFE)));\
-    RBASIC(obj)->klass = (c);\
-    if (rb_safe_level() >= 3) FL_SET(obj, FL_TAINT);\
-} while (0)
-
-typedef struct object_stats {
-  int newobj_calls;
-  int types[T_UNKNOWN];
-} object_stats_t;
-
-void rb_register_newobj _((int));
-object_stats_t* rb_object_stats();
-#else
 #define OBJSETUP(obj,c,t) do {\
     RBASIC(obj)->flags = (t | (RBASIC(obj)->flags & (FL_MOVE|FL_LONGLIFE)));\
     RBASIC(obj)->klass = (c);\
     if (rb_safe_level() >= 3) FL_SET(obj, FL_TAINT);\
 } while (0)
-#endif /* TRACE_NEWOBJ */
 
 #define CLONESETUP(clone,obj) do {\
     OBJSETUP(clone,rb_singleton_class_clone((VALUE)obj),RBASIC(obj)->flags);\
