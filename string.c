@@ -63,8 +63,7 @@ static VALUE
 str_alloc_eden(klass)
     VALUE klass;
 {
-    struct RString *str;
-    str = (struct RString*)rb_newobj_eden(-1);
+    NEWOBJ_EDEN(str, struct RString);
     OBJSETUP(str, klass, T_STRING);
 
     str->ptr = 0;
@@ -78,8 +77,7 @@ static VALUE
 str_alloc_longlife(klass)
     VALUE klass;
 {
-    struct RString *str;
-    str = (struct RString*)rb_newobj_longlife(-1);
+    NEWOBJ_LONGLIFE(str, struct RString);
     OBJSETUP(str, klass, T_STRING);
 
     str->ptr = 0;

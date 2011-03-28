@@ -335,18 +335,18 @@ char *gc_debug_get_backtrace(source_position_t *source_pos);
 #define GC_DEBUG_SET_SOURCE
 #endif /* GC_DEBUG */
 
-VALUE rb_newobj_eden _((int));
-VALUE rb_newobj_longlife _((int));
+VALUE rb_newobj_eden();
+VALUE rb_newobj_longlife();
 
-/* Gem compatibility only. Do not use. */
-VALUE rb_newobj _((int));
+/* Legacy gem compatibility only. Do not use. */
+VALUE rb_newobj();
 
 // Default allocator
-#define NEWOBJ(obj,type) type *obj = (type*)rb_newobj_eden(-1)
+#define NEWOBJ(obj,type) type *obj = (type*)rb_newobj_eden()
 
 // Specific allocators
-#define NEWOBJ_LONGLIFE(obj,type) type *obj = (type*)rb_newobj_longlife(-1)
-#define NEWOBJ_EDEN(obj,type) type *obj = (type*)rb_newobj_eden(-1)
+#define NEWOBJ_LONGLIFE(obj,type) type *obj = (type*)rb_newobj_longlife()
+#define NEWOBJ_EDEN(obj,type) type *obj = (type*)rb_newobj_eden()
 
 #define OBJSETUP(obj,c,t) do {\
     RBASIC(obj)->flags = (t | (RBASIC(obj)->flags & (FL_MOVE|FL_LONGLIFE)));\

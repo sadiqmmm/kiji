@@ -943,15 +943,14 @@ add_heap_if_needed(heaps_space_t* heaps_space)
     }
 }
 
-/* Make perftools.rb install ok */
+/* Legacy gem compatibility only. Do not use. */
 VALUE
-rb_newobj(int type)
-{
-    return rb_newobj_eden(type);
+rb_newobj() {
+    return rb_newobj_eden();
 }
 
 VALUE
-rb_newobj_eden(int type)
+rb_newobj_eden()
 {
     VALUE obj;
 
@@ -976,13 +975,13 @@ rb_newobj_eden(int type)
 }
 
 VALUE
-rb_newobj_longlife(int type)
+rb_newobj_longlife()
 {
     VALUE obj;
 
 #ifdef GC_DEBUG
     if (gc_debug_longlife_disabled) {
-        return rb_newobj_eden(type);
+        return rb_newobj_eden();
     }
     if (during_gc) {
         rb_bug("object allocation during garbage collection phase");
