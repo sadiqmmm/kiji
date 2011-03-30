@@ -768,6 +768,8 @@ static void set_gc_parameters()
       FILE* data_file = fopen(gc_data_file_name, "w");
       if (data_file != NULL) {
           gc_data_file = data_file;
+          // stderr is always unbuffered. user-specified files should be likewise
+          setbuf(gc_data_file, NULL);
       } else {
           fprintf(stderr, "Can't open RUBY_GC_DATA_FILE for writing\n");
           gc_data_file_name = "/dev/stderr";
