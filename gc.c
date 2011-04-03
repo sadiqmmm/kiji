@@ -22,6 +22,7 @@
 #include <setjmp.h>
 #include <math.h>
 #include <sys/types.h>
+#include <ctype.h>
 
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -76,207 +77,101 @@ static VALUE *gc_stack_limit;
 
 static void run_final();
 static VALUE nomem_error;
-static void garbage_collect();
+static void garbage_collect(const char* reason);
+static void add_to_longlife_recent_allocations(VALUE ptr);
 
-#define LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY 8
-#define LONGLIFE_CYCLE_DEFAULT_DELAY 128
-#define LONGLIFE_CYCLE_DELAY_FACTOR 2
-#define LONGLIFE_CYCLE_MAX_DELAY 1024
-static int longlife_disabled = Qfalse;
-static int longlife_temp_disable = Qfalse;
-static int longlife_initial_delay = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
-static int longlife_gc_after_gc_cycles = LONGLIFE_CYCLE_DEFAULT_INITIAL_DELAY;
-static int longlife_max_delay = LONGLIFE_CYCLE_DEFAULT_DELAY;
-static int longlife_allocation_since_last_gc = 0;
-static int longlife_heaps_used = 0;
+#define DEFAULT_LONGLIFE_LAZINESS 0.05
+static float longlife_laziness = DEFAULT_LONGLIFE_LAZINESS;
 static int longlife_collection = Qfalse;
-static int gc_cycles_since_last_longlife_gc = 0;
+static int longlife_recent_allocations = 0;
+int ruby_in_longlife_context = Qfalse;
 
-#define TRACER_MAX_KEY_LENGTH 27
-static int rb_tracer_enabled;
-static object_stats_t stats;
-static st_table* line_stats;
-static st_table* file_ids;
+typedef enum lifetime {
+    lifetime_longlife,
+    lifetime_eden
+} lifetime_t;
 
+#define OBJ_TYPE_COUNT (T_MASK + 1 + NODE_LAST)
+
+#if HAVE_LONG_LONG
+    #define GC_TIME_TYPE LONG_LONG
+#else
+    #define GC_TIME_TYPE long
+#endif
+
+static const char lifetime_name[][9] = { "Longlife", "Eden" };
+
+#ifdef GC_DEBUG
+static char *gc_data_file_name;
+static char *gc_dump_file_pattern;
+static char *backtrace_str_buffer = 0;
+static int backtrace_str_buffer_len = 0;
+
+int gc_debug_on = Qfalse;
+static int gc_eden_cycles_since_last_longlife = 0;
+
+static int gc_debug_summary = 0;
+int gc_debug_dump = 0;
+static int gc_debug_longlife_disabled = Qfalse;
+static int gc_debug_stress = Qfalse;
+static int gc_debug_always_mark = Qfalse;
+
+#define SOURCE_POS_INIT_SIZE 100000
+#define SOURCE_POS_INIT_TMP_SIZE 10000
+static st_table *source_positions;
+
+NODE* search_method(VALUE klass, ID id, VALUE *origin);
+static const char lifetime_name_lower[][9] = { "longlife", "eden" };
+#else
+#define gc_debug_stress (0)
+#define gc_debug_always_mark (0)
+#endif
+
+char* obj_type(int tp);
+char* node_type(int tp);
+
+#ifdef GC_DEBUG
 /*
- * Accessor for the object stats global. This is used by the trace extension.
+ *  call-seq:
+ *    GC.stress                 => true or false
+ *
+ *  returns current status of GC stress mode.
  */
-object_stats_t*
-rb_object_stats()
+
+static VALUE
+gc_debug_stress_get(self)
+    VALUE self;
 {
-  return (object_stats_t*)&stats;
+    return gc_debug_stress;
 }
 
 /*
- * Accessor for the line_stats global. This is used by the trace extension.
+ *  call-seq:
+ *    GC.stress = bool          => bool
+ *
+ *  updates GC stress mode.
+ *
+ *  When GC.stress = true, GC is invoked for all GC opportunity:
+ *  all memory and object allocation.
+ *
+ *  Since it makes Ruby very slow, it is only for debugging.
  */
-st_table*
-rb_line_stats()
+
+static VALUE
+gc_debug_stress_set(self, bool)
+    VALUE self, bool;
 {
-  return line_stats;
+    rb_secure(2);
+    gc_debug_stress = RTEST(bool) ? Qtrue : Qfalse;
+    return gc_debug_stress;
 }
 
-/*
- * Register a new Ruby object allocation of type +t+ with the tracing framework.
- * This function nops if the tracer is not enabled in the current context.
- */
-void
-rb_register_newobj(int t)
-{
-  if (rb_tracer_enabled) {
-    st_data_t file_hash = (st_data_t)strhash(ruby_sourcefile);
-    st_data_t value;
-    char *key;
-    char *tmp;
-
-    stats.newobj_calls++;
-
-    if (t < T_UNKNOWN) {
-      stats.types[t]++;
-    } else {
-      stats.types[T_UNKNOWN]++;
-    }
-
-    if (!st_lookup(file_ids, file_hash, 0)) {
-      tmp = strdup(ruby_sourcefile);
-      st_insert(file_ids, file_hash, (st_data_t)tmp);
-    }
-
-    key = malloc(TRACER_MAX_KEY_LENGTH);
-
-    if (!key) {
-      rb_bug("unable to allocate newobj key");
-    }
-
-    snprintf(key, TRACER_MAX_KEY_LENGTH, "%i:%i", (int)file_hash, ruby_sourceline);
-    if (st_lookup(line_stats, (st_data_t)key, &value)) {
-      st_insert(line_stats, (st_data_t)key, (st_data_t)(value + 1));
-    } else {
-      st_insert(line_stats, (st_data_t)key, 1);
-    }
-  }
-}
-
-/*
- * Lookup a file registered in rb_register_newobj() by its +id+. Returns the
- * absolute path to the file.
- */
-char *
-rb_trace_file_id(int id)
-{
-  char * file = NULL;
-
-  st_lookup(file_ids, (st_data_t)id, (st_data_t *)&file);
-  return file;
-}
-
-/*
- * Given a key/value pair, frees the key allocated during rb_register_newobj().
- * This is typically used as the second parameter to st_foreach.
- */
-int
-rb_free_tracing_keys(st_data_t key, st_data_t value)
-{
-  char* tmp = (char*)key;
-
-  if (tmp) {
-    free(tmp);
-  }
-
-  return 0;
-}
-
-/*
- * Given a key/value pair, frees the value allocated during rb_register_newobj().
- * This is typically used as the second parameter to st_foreach.
- */
-int
-rb_free_tracing_values(st_data_t key, st_data_t value)
-{
-  char* tmp = (char*)value;
-
-  if (tmp) {
-    free(tmp);
-  }
-
-  return 0;
-}
-
-/*
- * Resets the state of the tracing framework, but does not change its enabled/disabled status.
- */
-void
-rb_reset_tracing()
-{
-  int i;
-
-  if (line_stats) {
-    st_foreach(line_stats, rb_free_tracing_keys, (st_data_t)NULL);
-    st_free_table(line_stats);
-    line_stats = st_init_strtable();
-  }
-
-  if (file_ids) {
-    st_foreach(file_ids, rb_free_tracing_values, (st_data_t)NULL);
-    st_free_table(file_ids);
-    file_ids = st_init_numtable();
-  }
-
-  stats.newobj_calls = 0;
-  for (i = 0; i < T_UNKNOWN; i++) {
-    stats.types[i] = 0;
-  }
-}
-
-/*
- * Enable tracing for the current context. This will (re-)initialize both the
- * lines_stats and file_ids globals, throwing away any data contained therein.
- */
-void
-rb_enable_tracing()
-{
-
-  rb_reset_tracing();
-
-  if (!line_stats) {
-    line_stats = st_init_strtable();
-  }
-
-  if (!file_ids) {
-    file_ids = st_init_numtable();
-  }
-
-  rb_tracer_enabled = 1;
-}
-
-/*
- * Disable tracing for the current context. This will clear any data collected
- * while tracing was enabled.
- */
-void
-rb_disable_tracing()
-{
-  rb_reset_tracing();
-  rb_tracer_enabled = 0;
-}
-
-/*
- * Returns 0 or 1 depending upon the state of the tracing framework.
- */
-int
-rb_tracing_enabled_p()
-{
-  return rb_tracer_enabled;
-}
-
-#ifdef MBARI_API
 /*
  *  call-seq:
  *     GC.exorcise
  *
  *  Purge ghost references from recently freed stack space
  *
- *  <i>Only available when MBARI_API extentions are enabled at build time</i>
  */
 static VALUE gc_exorcise(VALUE mod)
 {
@@ -287,25 +182,13 @@ static VALUE gc_exorcise(VALUE mod)
 
 NORETURN(void rb_exc_jump _((VALUE)));
 
-static unsigned long live_objects = 0;
-static unsigned long max_live_objects = 0;
-static unsigned long longlife_live_objects = 0;
-static unsigned long longlife_max_live_objects = 0;
-
-unsigned long rb_os_live_objects()
-{ return live_objects; }
-
 #if defined(HAVE_LONG_LONG)
 static unsigned long long allocated_objects = 0;
-unsigned long long rb_os_allocated_objects()
-{ return allocated_objects; }
 #else
 static unsigned long allocated_objects = 0;
-unsigned long rb_os_allocated_objects()
-{ return allocated_objects; }
 #endif
 
-static int during_gc;
+static int during_gc = 0;
 
 void
 rb_memerror()
@@ -322,20 +205,16 @@ rb_memerror()
     rb_thread_t th = rb_curr_thread;
     during_gc = 0;
     if (!nomem_error ||
-	(rb_thread_raised_p(th, RAISED_NOMEMORY) && rb_safe_level() < 4)) {
-	fprintf(stderr, "[FATAL] failed to allocate memory\n");
-	exit(EXIT_FAILURE);
+        (rb_thread_raised_p(th, RAISED_NOMEMORY) && rb_safe_level() < 4)) {
+        fprintf(stderr, "[FATAL] failed to allocate memory\n");
+        exit(EXIT_FAILURE);
     }
     if (rb_thread_raised_p(th, RAISED_NOMEMORY)) {
-	rb_exc_jump(nomem_error);
+        rb_exc_jump(nomem_error);
     }
     rb_thread_raised_set(th, RAISED_NOMEMORY);
     rb_exc_raise(nomem_error);
 }
-
-long gc_allocated_size = 0;
-long gc_num_allocations = 0;
-static int gc_statistics = 0;
 
 void *
 ruby_xmalloc(size)
@@ -344,25 +223,20 @@ ruby_xmalloc(size)
     void *mem;
 
     if (size < 0) {
-	rb_raise(rb_eNoMemError, "negative allocation size (or too big)");
+        rb_raise(rb_eNoMemError, "negative allocation size (or too big)");
     }
-    if (size == 0) size = 1;
+    if (size == 0) {
+        size = 1;
+    }
 
     RUBY_CRITICAL(mem = malloc(size));
     if (!mem) {
-	if(longlife_heaps_used) {
-	    longlife_collection = Qtrue;
-	}
-	garbage_collect();
-	RUBY_CRITICAL(mem = malloc(size));
-	if (!mem) {
-	    rb_memerror();
-	}
-    }
-
-    if (gc_statistics) {
-	gc_allocated_size += size;
-	gc_num_allocations += 1;
+        longlife_collection = Qtrue;
+        garbage_collect("OOM in malloc");
+        RUBY_CRITICAL(mem = malloc(size));
+        if (!mem) {
+            rb_memerror();
+        }
     }
 
 #if STACK_WIPE_SITES & 0x100
@@ -391,20 +265,22 @@ ruby_xrealloc(ptr, size)
     void *mem;
 
     if (size < 0) {
-	rb_raise(rb_eArgError, "negative re-allocation size");
+        rb_raise(rb_eArgError, "negative re-allocation size");
     }
-    if (!ptr) return xmalloc(size);
-    if (size == 0) size = 1;
+    if (!ptr) {
+      return xmalloc(size);
+    }
+    if (size == 0) {
+      size = 1;
+    }
 
     RUBY_CRITICAL(mem = realloc(ptr, size));
     if (!mem) {
-	if(longlife_heaps_used) {
-	    longlife_collection = Qtrue;
-	}
-	garbage_collect();
-	RUBY_CRITICAL(mem = realloc(ptr, size));
-	if (!mem) {
-	    rb_memerror();
+        longlife_collection = Qtrue;
+        garbage_collect("OOM in realloc()");
+        RUBY_CRITICAL(mem = realloc(ptr, size));
+        if (!mem) {
+            rb_memerror();
         }
     }
 #if STACK_WIPE_SITES & 0x200
@@ -417,169 +293,16 @@ void
 ruby_xfree(x)
     void *x;
 {
-    if (x)
-	RUBY_CRITICAL(free(x));
+    if (x) {
+        RUBY_CRITICAL(free(x));
+    }
 }
 
-#if HAVE_LONG_LONG
-    #define GC_TIME_TYPE LONG_LONG
-#else
-    #define GC_TIME_TYPE long
-#endif
-
-extern int ruby_in_compile;
 static int dont_gc;
-static GC_TIME_TYPE gc_time = 0;
-static int gc_collections = 0;
 static int need_call_final = 0;
 static st_table *finalizer_table = 0;
 
-
-/************************************************************
- * Heap and copy-on-write debugging support functions
- ************************************************************/
-
-/* Compound structure, containing debugging options. */
-static struct {
-    FILE *terminal;
-
-    /* Whether to allocate Ruby heaps by mmapping a file. This makes it easier to see how many
-     * bytes in heaps have been made dirty, using memory analysis tools.
-     */
-    int alloc_heap_with_file;
-
-    /* Whether to ask the user to press Enter, before garbage collection starts.
-     * Can be used to check how many pages are made dirty by the garbage collector.
-     */
-    int prompt_before_gc;
-
-    /* Whether to ask the user to press Enter before the sweep phase of the garbage
-     * collector starts. */
-    int prompt_before_sweep;
-
-    /* Whether to ask the user to press Enter after the sweep phase of the garbage
-     * collector starts. */
-    int prompt_after_sweep;
-
-    int print_sweeped_objects;
-} debug_options;
-
-#define OPTION_ENABLED(name) (getenv((name)) && *getenv((name)) && *getenv((name)) != '0')
-
-static VALUE
-rb_gc_init_debugging(VALUE self)
-{
-    if (debug_options.terminal != NULL) {
-	fclose(debug_options.terminal);
-	debug_options.terminal = NULL;
-    }
-    if (getenv("RD_TERMINAL")) {
-	debug_options.terminal = fopen(getenv("RD_TERMINAL"), "a+");
-	if (debug_options.terminal == NULL) {
-	    int e = errno;
-	    fprintf(stderr, "Cannot open %s: %s (%d)\n", getenv("RD_TERMINAL"), strerror(e), e);
-	    fflush(stderr);
-	}
-    }
-    debug_options.alloc_heap_with_file  = OPTION_ENABLED("RD_ALLOC_HEAP_WITH_FILE");
-    debug_options.prompt_before_gc      = OPTION_ENABLED("RD_PROMPT_BEFORE_GC");
-    debug_options.prompt_before_sweep   = OPTION_ENABLED("RD_PROMPT_BEFORE_SWEEP");
-    debug_options.prompt_after_sweep    = OPTION_ENABLED("RD_PROMPT_AFTER_SWEEP");
-    debug_options.print_sweeped_objects = OPTION_ENABLED("RD_PRINT_SWEEPED_OBJECTS");
-    return Qnil;
-}
-
-static void
-debug_print(const char *message, ...)
-{
-    va_list ap;
-
-    va_start(ap, message);
-    if (debug_options.terminal != NULL) {
-	vfprintf(debug_options.terminal, message, ap);
-	fflush(debug_options.terminal);
-    } else {
-	vfprintf(stderr, message, ap);
-	fflush(stderr);
-    }
-    va_end(ap);
-}
-
-#define debug_prompt(prompt) \
-    do { \
-	if (debug_options.terminal != NULL) { \
-	    fprintf(debug_options.terminal, prompt); \
-	    fflush(debug_options.terminal); \
-	    getc(debug_options.terminal); \
-	} else { \
-	    fprintf(stderr, prompt); \
-	    fflush(stderr); \
-	    getchar(); \
-	} \
-    } while (0)
-
-
-/************************************
- * Heap (de)allocation functions
- ************************************/
-
-typedef struct {
-    int fd;
-    size_t size;
-} FileHeapAllocatorMetaData;
-
-static void *
-alloc_ruby_heap_with_file(size_t size)
-{
-    FileHeapAllocatorMetaData meta;
-    meta.fd = open("/dev/zero", O_RDONLY);
-    meta.size = size;
-    if (meta.fd == -1) {
-	return NULL;
-    } else {
-	void *memory = mmap(NULL, size + sizeof(meta), PROT_READ | PROT_WRITE,
-	                    MAP_PRIVATE, meta.fd, 0);
-	if (memory == NULL) {
-	    return NULL;
-	} else {
-	    memcpy(memory, &meta, sizeof(meta));
-	    return memory + sizeof(meta);
-	}
-    }
-}
-
-static void *
-alloc_ruby_heap(size_t size)
-{
-    if (debug_options.alloc_heap_with_file) {
-	return alloc_ruby_heap_with_file(size);
-    } else {
-	return malloc(size);
-    }
-}
-
-static void
-free_ruby_heap_with_file(void *heap)
-{
-    FileHeapAllocatorMetaData *meta = (FileHeapAllocatorMetaData *)
-        (heap - sizeof(FileHeapAllocatorMetaData));
-    close(meta->fd);
-    munmap(heap, meta->size + sizeof(FileHeapAllocatorMetaData));
-}
-
-static void
-free_ruby_heap(void *heap)
-{
-    if (debug_options.alloc_heap_with_file) {
-	free_ruby_heap_with_file(heap);
-    } else {
-	free(heap);
-    }
-}
-
-
 /*******************************************************************/
-
 
 /*
  *  call-seq:
@@ -624,140 +347,6 @@ rb_gc_disable()
     return old;
 }
 
-/*
- *  call-seq:
- *     GC.enable_stats    => true or false
- *
- *  Enables garbage collection statistics, returning <code>true</code> if garbage
- *  collection statistics was already enabled.
- *
- *     GC.enable_stats   #=> false or true
- *     GC.enable_stats   #=> true
- *
- */
-
-VALUE
-rb_gc_enable_stats()
-{
-    int old = gc_statistics;
-    gc_statistics = Qtrue;
-    return old;
-}
-
-/*
- *  call-seq:
- *     GC.disable_stats    => true or false
- *
- *  Disables garbage collection statistics, returning <code>true</code> if garbage
- *  collection statistics was already disabled.
- *
- *     GC.disable_stats   #=> false or true
- *     GC.disable_stats   #=> true
- *
- */
-
-VALUE
-rb_gc_disable_stats()
-{
-    int old = gc_statistics;
-    gc_statistics = Qfalse;
-    gc_allocated_size = 0;
-    gc_num_allocations = 0;
-    return old;
-}
-
-/*
- *  call-seq:
- *     GC.clear_stats    => nil
- *
- *  Clears garbage collection statistics, returning nil. This resets the number
- *  of collections (GC.collections) and the time used (GC.time) to 0.
- *
- *     GC.clear_stats    #=> nil
- *
- */
-
-VALUE
-rb_gc_clear_stats()
-{
-    gc_collections = 0;
-    gc_time = 0;
-    gc_allocated_size = 0;
-    gc_num_allocations = 0;
-    return Qnil;
-}
-
-/*
- *  call-seq:
- *     GC.allocated_size    => Integer
- *
- *  Returns the size of memory (in bytes) allocated since GC statistics collection
- *  was enabled.
- *
- *     GC.allocated_size    #=> 35
- *
- */
-VALUE
-rb_gc_allocated_size()
-{
-    return INT2NUM(gc_allocated_size);
-}
-
-/*
- *  call-seq:
- *     GC.num_allocations    => Integer
- *
- *  Returns the number of memory allocations since GC statistics collection
- *  was enabled.
- *
- *     GC.num_allocations    #=> 150
- *
- */
-VALUE
-rb_gc_num_allocations()
-{
-    return INT2NUM(gc_num_allocations);
-}
-
-/*
- *  call-seq:
- *     GC.collections    => Integer
- *
- *  Returns the number of garbage collections performed while GC statistics collection
- *  was enabled.
- *
- *     GC.collections    #=> 35
- *
- */
-
-VALUE
-rb_gc_collections()
-{
-    return INT2NUM(gc_collections);
-}
-
-/*
- *  call-seq:
- *     GC.time    => Integer
- *
- *  Returns the time spent during garbage collection while GC statistics collection
- *  was enabled (in micro seconds).
- *
- *     GC.time    #=> 20000
- *
- */
-
-VALUE
-rb_gc_time()
-{
-#if HAVE_LONG_LONG
-    return LL2NUM(gc_time);
-#else
-    return LONG2NUM(gc_time);
-#endif
-}
-
-
 VALUE rb_mGC;
 
 static struct gc_list {
@@ -784,23 +373,21 @@ rb_gc_unregister_address(addr)
     struct gc_list *tmp = global_List;
 
     if (tmp->varptr == addr) {
-	global_List = tmp->next;
-	RUBY_CRITICAL(free(tmp));
-	return;
+        global_List = tmp->next;
+        RUBY_CRITICAL(free(tmp));
+        return;
     }
     while (tmp->next) {
-	if (tmp->next->varptr == addr) {
-	    struct gc_list *t = tmp->next;
+        if (tmp->next->varptr == addr) {
+            struct gc_list *t = tmp->next;
 
-	    tmp->next = tmp->next->next;
-	    RUBY_CRITICAL(free(t));
-	    break;
-	}
-	tmp = tmp->next;
+            tmp->next = tmp->next->next;
+            RUBY_CRITICAL(free(t));
+            break;
+        }
+        tmp = tmp->next;
     }
 }
-
-#undef GC_DEBUG
 
 void
 rb_global_variable(var)
@@ -813,48 +400,290 @@ rb_global_variable(var)
 #pragma pack(push, 1) /* magic for reducing sizeof(RVALUE): 24 -> 20 */
 #endif
 
+static FILE* gc_data_file = NULL;
+
 typedef struct RVALUE {
     union {
-	struct {
-	    unsigned long flags;	/* always 0 for freed obj */
-	    struct RVALUE *next;
-	} free;
-	struct RBasic  basic;
-	struct RObject object;
-	struct RClass  klass;
-	struct RFloat  flonum;
-	struct RString string;
-	struct RArray  array;
-	struct RRegexp regexp;
-	struct RHash   hash;
-	struct RData   data;
-	struct RStruct rstruct;
-	struct RBignum bignum;
-	struct RFile   file;
-	struct RNode   node;
-	struct RMatch  match;
-	struct RVarmap varmap;
-	struct SCOPE   scope;
+        struct {
+            unsigned long flags;        /* always 0 for freed obj */
+            struct RVALUE *next;
+        } free;
+        struct RBasic  basic;
+        struct RObject object;
+        struct RClass  klass;
+        struct RFloat  flonum;
+        struct RString string;
+        struct RArray  array;
+        struct RRegexp regexp;
+        struct RHash   hash;
+        struct RData   data;
+        struct RStruct rstruct;
+        struct RBignum bignum;
+        struct RFile   file;
+        struct RNode   node;
+        struct RMatch  match;
+        struct RVarmap varmap;
+        struct SCOPE   scope;
     } as;
 #ifdef GC_DEBUG
-    char *file;
-    int   line;
+    source_position_t *source_pos;
 #endif
 } RVALUE;
+
+#ifdef GC_DEBUG
+int
+gc_debug_check_printable(char *str)
+{
+    int j, str_len;
+    if (!str) {
+        return 0;
+    }
+    str_len = strlen(str);
+    for (j = 0; j < str_len; j++) {
+        if (!isprint(str[j])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+source_position_compare(source_position_t *x, source_position_t *y)
+{
+    return x->frames_hash != y->frames_hash;
+}
+
+static int
+source_position_hash(source_position_t *x)
+{
+    return x->frames_hash;
+}
+
+static struct st_hash_type source_positions_type = {
+    compare: source_position_compare,
+    hash: source_position_hash
+};
+
+char *
+gc_debug_get_backtrace(source_position_t *source_pos)
+{
+    size_t len;
+    size_t backtrace_len = 0;
+    char line_str[11];
+    char cfunc_str[63];
+    char *func_str;
+
+    /* FIXME Some source_pos aren't correctly marked; thus the guards. */
+    while (source_pos && gc_debug_check_printable(source_pos->file) && source_pos->line > -2 && source_pos->line < 1000000) {
+        if (snprintf(line_str, sizeof(line_str), "%d", source_pos->line) > sizeof(line_str)) {
+            rb_bug("Overflow on line_str");
+        }
+
+        func_str = rb_id2name(source_pos->func);
+        if (!func_str) {
+            /* Unknown internal address; can be converted to a function name via atos (OS X) or addr2name (Linux) */
+            if (snprintf(cfunc_str, sizeof(cfunc_str), "<0x%x>", (unsigned int) source_pos->func) > sizeof(cfunc_str)) {
+                rb_bug("Overflow on cfunc_str");
+            }
+            func_str = cfunc_str;
+        }
+
+        len = 3 + strlen(source_pos->file) + strlen(line_str) + (func_str ? strlen(func_str) + 1 : 0);
+
+        if (backtrace_str_buffer_len < backtrace_len + len) {
+            backtrace_str_buffer_len = backtrace_len + len;
+            backtrace_str_buffer = realloc(backtrace_str_buffer, backtrace_str_buffer_len);
+            if (!backtrace_str_buffer) {
+                rb_bug("OOM on backtrace_str_buffer realloc");
+            }
+        }
+        snprintf(backtrace_str_buffer + backtrace_len, len,
+            " %s:%d%s%s",
+            source_pos->file,
+            source_pos->line,
+            func_str ? "#" : "",
+            func_str ? func_str : "");
+
+        /* gc_debug_check_printable(backtrace_str_buffer); */
+        backtrace_len += len - 1; /* overwrite \0 on next pass */
+        source_pos = source_pos->parent;
+    }
+    return backtrace_str_buffer;
+}
+
+static int
+gc_debug_print_source_locations(source_position_t *source_pos, int *counts, FILE *output_file)
+{
+    int i;
+    char *backtrace_str = 0;
+
+    for(i = 0; i < OBJ_TYPE_COUNT; i++) {
+        if (counts[i] > 0) {
+            if (!backtrace_str) {
+                backtrace_str = gc_debug_get_backtrace(source_pos);
+            }
+            fprintf(output_file, "%8d %-15s%s\n",
+                counts[i],
+                i < T_NODE ? obj_type(i) : node_type(i - T_NODE),
+                backtrace_str);
+        }
+    }
+    free(counts);
+    return ST_CONTINUE;
+}
+
+static source_position_t *
+gc_debug_new_source_pos(char *file, int line, struct FRAME *frame)
+{
+    source_position_t *new_source_pos;
+    source_position_t *source_pos;
+    source_position_t *parent;
+    NODE *func_node;
+    ID func = 0;
+
+    new_source_pos = malloc(sizeof(source_position_t));
+    if (!new_source_pos) {
+        rb_bug("OOM during source_position_list allocation");
+    }
+
+    if(frame) {
+        parent = frame->source_pos;
+        if (frame->last_func) {
+            func = frame->last_func;
+        } else if (frame->node) {
+            if (nd_type(frame->node) == NODE_IFUNC) {
+                func = (ID)frame->node->nd_cfnc;
+            } else {
+                func = frame->node->nd_mid;
+            }
+        }
+    }
+    else {
+        parent = 0;
+    }
+    if (!func) {
+        func = ruby_sourcefunc;
+    }
+
+    if(!file && frame) {
+        func_node = search_method(frame->last_class, func, 0);
+        if (func_node && func_node->nd_file) {
+            file = func_node->nd_file;
+        }
+    }
+    if (!file) {
+        file = rb_source_filename("(ruby)");
+    }
+
+    new_source_pos->func = func;
+    new_source_pos->file = file;
+    new_source_pos->line = line;
+    new_source_pos->parent = parent;
+    new_source_pos->frames_hash =
+        (parent ? parent->frames_hash * 31 * 31 * 31 : 0) +
+        (VALUE) file * 31 * 31 +
+        (VALUE) func * 31 +
+        line;
+
+    if (!st_lookup(source_positions, (st_data_t)new_source_pos, (st_data_t *)&source_pos)) {
+        source_pos = new_source_pos;
+        st_insert(source_positions, (st_data_t)(source_pos), (long int) source_pos);
+    } else {
+        free(new_source_pos);
+    }
+    return source_pos;
+}
+
+/**
+  * Creates a source position for a stack frame. It will describe the location
+  * of the call site for the call this frame belongs to.
+  */
+void
+gc_debug_get_frame_source_pos(struct FRAME *frame) {
+    char *file = 0;
+    int line = 0;
+
+    if (!(GC_DEBUG_ON && gc_debug_dump)) {
+        return;
+    }
+
+    if (frame->node) {
+        // Location of the call site in the caller
+        file = frame->node->nd_file;
+        line = nd_line(frame->node);
+    }
+
+    frame->source_pos = gc_debug_new_source_pos(file, line, frame->prev);
+}
+
+static source_position_t *
+gc_debug_get_obj_source_pos()
+{
+    struct FRAME *frame = ruby_frame;
+    char *file = 0;
+    int line = 0;
+
+    if (frame->last_func == ID_ALLOCATOR) {
+        frame = frame->prev;
+    }
+
+    if (ruby_current_node) {
+        file = ruby_current_node->nd_file;
+        line = nd_line(ruby_current_node);
+    }
+
+    return gc_debug_new_source_pos(file, line, frame);
+}
+
+static void
+gc_debug_add_to_source_pos_table(st_table *table, RVALUE *p, int type)
+{
+    int *counts;
+    if (!st_lookup(table, (st_data_t)p->source_pos, (st_data_t *)&counts)) {
+        counts = malloc(sizeof(int) * OBJ_TYPE_COUNT);
+        MEMZERO(counts, int, OBJ_TYPE_COUNT);
+        st_insert(table, (st_data_t)p->source_pos, (long int) counts);
+    }
+
+    if (type == T_NODE) type += nd_type(p);
+    counts[type] +=1;
+}
+
+static void
+gc_debug_dump_source_pos_table(st_table *table, lifetime_t lt, char *suffix)
+{
+    char fname[255];
+
+    /* You can parse the output file with simple Unix tools. For example, to
+        see objects that remain on the eden heap after collection, coalesce
+        them by the first 5 backtrace lines, and pretty-print the output, run:
+
+        cat /tmp/rb_gc_debug_objects.eden.live.txt |
+        awk '
+        BEGIN {} { sums[$2," ", $3, " ", $4, " ", $5, " ", $6, " ", $7, " ", $8] += $1 }
+        END { for (i in sums) { print sums[i], i } }' |
+        sort -rni |
+        head -n 30 |
+        ruby -e "STDIN.readlines.each {|l| puts l.split}"
+
+    */
+
+    snprintf(fname, 255, gc_dump_file_pattern, lifetime_name_lower[lt], suffix);
+    FILE* output_file = fopen(fname, "w");
+    if (!output_file) {
+        GC_DEBUG_PRINTF("ERROR: Can't open %s for writing\n", fname);
+        return;
+    }
+    st_foreach(table, gc_debug_print_source_locations, (long int)output_file);
+}
+
+#endif /* GC_DEBUG */
 
 #if defined(_MSC_VER) || defined(__BORLANDC__) || defined(__CYGWIN__)
 #pragma pack(pop)
 #endif
 
 static RVALUE *deferred_final_list = 0;
-
-typedef enum lifetime {
-    lifetime_normal,
-    lifetime_longlife
-} lifetime_t;
-
-#define LIFETIME_NAME_BUFSZ 16
-static const char lifetime_name[][LIFETIME_NAME_BUFSZ] = { "Normal heap", "Longlife heap" };
 
 static int heaps_increment = 10;
 static struct heaps_slot {
@@ -869,187 +698,113 @@ static struct heaps_slot {
 static int heaps_length = 0;
 static int heaps_used   = 0;
 
-static int heap_min_slots = 240000;
+/* Too large a heap size and you can never free a page, due to fragmentation. Too
+    small, and you have too many heaps and get stack errors. */
+static int heap_size = 32768;
+static int eden_heaps = 24;
+
 typedef struct heaps_space {
-    int heap_slots;
-    int heap_slots_increment;
+    int heap_slots_total;
+    int num_heaps;
     enum lifetime lifetime;
     RVALUE *freelist;
 } heaps_space_t;
 
-static heaps_space_t normal_heaps_space;
+static heaps_space_t eden_heaps_space;
 static heaps_space_t longlife_heaps_space;
-
-static int heap_free_min = 4096;
-static double heap_slots_growth_factor = 1.0;
-
-static int verbose_gc_stats = Qfalse;
-
-static FILE* gc_data_file = NULL;
 
 typedef struct remembered_set {
     RVALUE *obj;
     struct remembered_set *next;
 } remembered_set_t;
 
-static remembered_set_t *remembered_set_ptr; // [ASz] remembered_set_ptr
-static remembered_set_t *remembered_set_freed; // [ASz] remembered_set_freed
-static unsigned int remembered_set_recalculations;
+static remembered_set_t *remembered_set_ptr;
+static remembered_set_t *remembered_set_freed;
+
+typedef struct longlife_recent_allocations_set {
+    RVALUE *obj;
+    struct longlife_recent_allocations_set *next;
+} longlife_recent_allocations_set_t;
+
+static longlife_recent_allocations_set_t *longlife_recent_allocations_set_ptr;
+static longlife_recent_allocations_set_t *longlife_recent_allocations_set_freed;
 
 static RVALUE *himem, *lomem;
 
 #include "marktable.h"
 #include "marktable.c"
-#include "fastmarktable.c"
 
 static int gc_cycles = 0;
 static int gc_longlife_cycles = 0;
 
 static void set_gc_parameters()
 {
-    char *gc_stats_ptr, *min_slots_ptr, *free_min_ptr, *heap_slots_incr_ptr,
-         *heap_incr_ptr, *gc_heap_file_ptr,
-         *heap_slots_growth_factor_ptr, *longlife_disabled_ptr,
-         *longlife_max_delay_ptr, *longlife_initial_delay_ptr;
 
-    gc_data_file = stderr;
+#define WITH_ENV_VAR(varname, variable, type, conv, cond, fmt) \
+    do { \
+        char* ptr = getenv(varname); \
+        type val = variable; \
+        char* __varname__ = varname; \
+        char* __fmt__ = fmt; \
+        if(ptr != NULL) { \
+            val = conv(ptr); \
+            if(cond) {
+#define END_WITH_ENV_VAR } } if (gc_data_file) { GC_DEBUG_PRINTF(__fmt__, __varname__, val) } } while(0);
 
-    gc_stats_ptr = getenv("RUBY_GC_STATS");
-    if (gc_stats_ptr != NULL) {
-	int gc_stats_i = atoi(gc_stats_ptr);
-	if (gc_stats_i > 0) {
-            gc_statistics = Qtrue;
-	    verbose_gc_stats = Qtrue;
-	}
+#define WITH_INT_ENV_VAR(varname, variable) WITH_ENV_VAR(varname, variable, int, atoi, val > 0, "%s=%d\n")
+#define WITH_FLOAT_ENV_VAR(varname, variable) WITH_ENV_VAR(varname, variable, double, atof, val > 0, "%s=%f\n")
+
+#define SET_INT_ENV_VAR(varname, variable) WITH_INT_ENV_VAR(varname, variable) variable = val; END_WITH_ENV_VAR
+#define SET_FLOAT_ENV_VAR(varname, variable) WITH_FLOAT_ENV_VAR(varname, variable) variable = val; END_WITH_ENV_VAR
+#define SET_BOOLEAN_ENV_VAR(varname, variable) WITH_INT_ENV_VAR(varname, variable) variable = Qtrue; END_WITH_ENV_VAR
+
+#ifdef GC_DEBUG
+    SET_BOOLEAN_ENV_VAR("RUBY_GC_DEBUG", gc_debug_on)
+    if (gc_debug_on) {
+      gc_data_file_name = getenv("RUBY_GC_DATA_FILE");
+      if (gc_data_file_name == NULL) {
+        gc_data_file_name = "/dev/stderr";
+      }
+      FILE* data_file = fopen(gc_data_file_name, "w");
+      if (data_file != NULL) {
+          gc_data_file = data_file;
+          // stderr is always unbuffered. user-specified files should be likewise
+          setbuf(gc_data_file, NULL);
+      } else {
+          fprintf(stderr, "Can't open RUBY_GC_DATA_FILE for writing\n");
+          gc_data_file_name = "/dev/stderr";
+          gc_data_file = fopen(gc_data_file_name, "w");
+      }
     }
 
-    gc_heap_file_ptr = getenv("RUBY_GC_DATA_FILE");
-    if (gc_heap_file_ptr != NULL) {
-	FILE* data_file = fopen(gc_heap_file_ptr, "w");
-	if (data_file != NULL) {
-	    gc_data_file = data_file;
-	}
-	else {
-	    fprintf(stderr,
-		    "can't open gc log file %s for writing, using default\n", gc_heap_file_ptr);
-	}
+    gc_dump_file_pattern = getenv("RUBY_GC_DUMP_FILE_PATTERN");
+    if(gc_dump_file_pattern == NULL) {
+        gc_dump_file_pattern = "/tmp/rb_gc_debug_objects.%s.%s.txt";
     }
+#endif
 
-    min_slots_ptr = getenv("RUBY_HEAP_MIN_SLOTS");
-    if (min_slots_ptr != NULL) {
-	int min_slots_i = atoi(min_slots_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_HEAP_MIN_SLOTS=%s\n", min_slots_ptr);
+    SET_INT_ENV_VAR("RUBY_GC_HEAP_SIZE", heap_size)
+    SET_INT_ENV_VAR("RUBY_GC_EDEN_HEAPS", eden_heaps)
+
+    WITH_FLOAT_ENV_VAR("RUBY_GC_LONGLIFE_LAZINESS", longlife_laziness)
+        if (val >= 1) {
+          val = DEFAULT_LONGLIFE_LAZINESS;
         }
-	if (min_slots_i > 0) {
-	    normal_heaps_space.heap_slots = min_slots_i;
-	    longlife_heaps_space.heap_slots = min_slots_i;
-	    heap_min_slots = min_slots_i;
-	}
+        longlife_laziness = val;
+    END_WITH_ENV_VAR
+
+#ifdef GC_DEBUG
+    GC_DEBUG_PRINT("GC_DEBUG is available\n")
+    SET_BOOLEAN_ENV_VAR("RUBY_GC_DEBUG_LONGLIFE_DISABLE", gc_debug_longlife_disabled)
+    SET_BOOLEAN_ENV_VAR("RUBY_GC_DEBUG_STRESS", gc_debug_stress)
+    SET_BOOLEAN_ENV_VAR("RUBY_GC_DEBUG_ALWAYS_MARK", gc_debug_always_mark)
+    if (GC_DEBUG_ON) {
+        SET_BOOLEAN_ENV_VAR("RUBY_GC_DEBUG_SUMMARY", gc_debug_summary)
+        SET_BOOLEAN_ENV_VAR("RUBY_GC_DEBUG_DUMP", gc_debug_dump)
     }
-
-    free_min_ptr = getenv("RUBY_HEAP_FREE_MIN");
-    if (free_min_ptr != NULL) {
-	int free_min_i = atoi(free_min_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_HEAP_FREE_MIN=%s\n", free_min_ptr);
-	}
-	if (free_min_i > 0) {
-	    heap_free_min = free_min_i;
-	}
-    }
-
-    heap_incr_ptr = getenv("RUBY_HEAP_INCREMENT");
-    if (heap_incr_ptr != NULL) {
-	int heap_incr_i = atoi(heap_incr_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_HEAP_INCREMENT=%s\n", heap_incr_ptr);
-	}
-	if (heap_incr_i > 0) {
-	    heaps_increment = heap_incr_i;
-	}
-    }
-
-    heap_slots_incr_ptr = getenv("RUBY_HEAP_SLOTS_INCREMENT");
-    if (heap_slots_incr_ptr != NULL) {
-	int heap_slots_incr_i = atoi(heap_slots_incr_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_HEAP_SLOTS_INCREMENT=%s\n", heap_slots_incr_ptr);
-	}
-	if (heap_slots_incr_i > 0) {
-	    normal_heaps_space.heap_slots_increment = heap_slots_incr_i;
-	    longlife_heaps_space.heap_slots_increment = heap_slots_incr_i;
-	}
-    }
-    heap_slots_growth_factor_ptr = getenv("RUBY_HEAP_SLOTS_GROWTH_FACTOR");
-    if (heap_slots_growth_factor_ptr != NULL) {
-	double heap_slots_growth_factor_d = atof(heap_slots_growth_factor_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_HEAP_SLOTS_GROWTH_FACTOR=%s\n", heap_slots_growth_factor_ptr);
-	}
-	if (heap_slots_growth_factor_d > 0) {
-	    heap_slots_growth_factor = heap_slots_growth_factor_d;
-	}
-    }
-
-    longlife_disabled_ptr = getenv("RUBY_GC_LONGLIFE_DISABLE");
-    if (longlife_disabled_ptr != NULL) {
-	int longlife_disabled_i = atol(longlife_disabled_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_DISABLE=%s\n", longlife_disabled_ptr);
-	}
-	if (longlife_disabled_i != 0) {
-	    longlife_disabled = Qtrue;
-	}
-    }
-
-    longlife_max_delay_ptr = getenv("RUBY_GC_LONGLIFE_MAX_DELAY");
-    if (longlife_max_delay_ptr != NULL) {
-	int longlife_max_delay_i = atol(longlife_max_delay_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_MAX_DELAY=%s\n", longlife_max_delay_ptr);
-	}
-	if (longlife_max_delay_i >= 0 &&
-            longlife_max_delay_i <= LONGLIFE_CYCLE_MAX_DELAY) {
-	    longlife_max_delay = longlife_max_delay_i;
-	}
-    }
-
-    longlife_initial_delay_ptr = getenv("RUBY_GC_LONGLIFE_INITIAL_DELAY");
-    if (longlife_initial_delay_ptr != NULL) {
-	int longlife_initial_delay_i = atol(longlife_initial_delay_ptr);
-        if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "RUBY_GC_LONGLIFE_INITIAL_DELAY=%s\n", longlife_initial_delay_ptr);
-	}
-	if (longlife_initial_delay_i >= 0 &&
-            longlife_initial_delay_i <= LONGLIFE_CYCLE_MAX_DELAY) {
-          longlife_initial_delay = longlife_initial_delay_i;
-          longlife_gc_after_gc_cycles = longlife_initial_delay;
-	}
-    }
-}
-
-/*
- *  call-seq:
- *     GC.dump    => nil
- *
- *  dumps information about the current GC data structures to the GC log file
- *
- *     GC.dump    #=> nil
- *
- */
-
-VALUE
-rb_gc_dump()
-{
-    int i;
-
-    for (i = 0; i < heaps_used; i++) {
-	int heap_size = heaps[i].limit;
-	fprintf(gc_data_file, "HEAP[%2d]: size=%7d\n", i, heap_size);
-    }
-
-    return Qnil;
+#else
+    GC_DEBUG_PRINT("GC_DEBUG not available (configure with --enable-gc-debug)\n")
+#endif
 }
 
 /*
@@ -1080,69 +835,80 @@ rb_gc_log(self, original_str)
 
 static inline void push_freelist(heaps_space_t *heaps_space, RVALUE *p)
 {
+    MEMZERO((void*)p, RVALUE, 1);
     p->as.free.next = heaps_space->freelist;
     heaps_space->freelist = p;
 }
 
-static void
+static int
 add_heap(heaps_space_t *heaps_space)
 {
     RVALUE *p, *pend;
+    int new_heap_size = heap_size;
 
     if (heaps_used == heaps_length) {
-	/* Realloc heaps */
-	struct heaps_slot *p;
-	int length;
+        /* Realloc heaps */
+        struct heaps_slot *p;
+        int length;
 
-	heaps_length += heaps_increment;
-	length = heaps_length*sizeof(struct heaps_slot);
-	RUBY_CRITICAL(
-	    if (heaps_used > 0) {
-		p = (struct heaps_slot *)realloc(heaps, length);
-		if (p) heaps = p;
-	    }
-	    else {
-		p = heaps = (struct heaps_slot *)malloc(length);
-	    });
-	if (p == 0) rb_memerror();
+        heaps_length += heaps_increment;
+        length = heaps_length*sizeof(struct heaps_slot);
+        RUBY_CRITICAL(
+            if (heaps_used > 0) {
+                p = (struct heaps_slot *)realloc(heaps, length);
+                if (p) {
+                  heaps = p;
+                  /* Clear the last_heap cache to remove potentially erroneous references. */
+                  rb_mark_table_prepare();
+                }
+            }
+            else {
+                p = heaps = (struct heaps_slot *)malloc(length);
+            });
+        if (p == 0) {
+          rb_memerror();
+        }
     }
 
     for (;;) {
-	RUBY_CRITICAL(p = (RVALUE*)alloc_ruby_heap(sizeof(RVALUE)*(heaps_space->heap_slots+1)));
-	if (p == 0) {
-	    if (heaps_space->heap_slots == heap_min_slots) {
-		rb_memerror();
-	    }
-	    heaps_space->heap_slots = heap_min_slots;
-	    continue;
-	}
+        RUBY_CRITICAL(p = (RVALUE*)malloc(sizeof(RVALUE)*(new_heap_size)));
+        if (p == 0) {
+          rb_memerror();
+        }
         heaps[heaps_used].membase = p;
-        if ((VALUE)p % sizeof(RVALUE) == 0)
-            heaps_space->heap_slots += 1;
-        else
+
+        // Align heap pointer to RVALUE size, if necessary
+        if ((VALUE)p % sizeof(RVALUE) != 0) {
             p = (RVALUE*)((VALUE)p + sizeof(RVALUE) - ((VALUE)p % sizeof(RVALUE)));
+            new_heap_size--;
+        }
+
         heaps[heaps_used].slot = p;
-        heaps[heaps_used].limit = heaps_space->heap_slots;
-        heaps[heaps_used].slotlimit = p + heaps_space->heap_slots;
-        heaps[heaps_used].marks_size = (int) (ceil(heaps_space->heap_slots / (sizeof(int) * 8.0)));
+        heaps[heaps_used].limit = new_heap_size;
+        heaps[heaps_used].slotlimit = p + new_heap_size;
+        heaps[heaps_used].marks_size = (int) (ceil(new_heap_size / (sizeof(int) * 8.0)));
         heaps[heaps_used].marks = (int *) calloc(heaps[heaps_used].marks_size, sizeof(int));
         heaps[heaps_used].lifetime = heaps_space->lifetime;
-	break;
+        break;
     }
-    pend = p + heaps_space->heap_slots;
-    if (lomem == 0 || lomem > p) lomem = p;
-    if (himem < pend) himem = pend;
-    if (heaps_space->lifetime == lifetime_longlife) longlife_heaps_used++;
+    pend = p + new_heap_size;
+    if (lomem == 0 || lomem > p) {
+      lomem = p;
+    }
+    if (himem < pend) {
+      himem = pend;
+    }
+    heaps_space->heap_slots_total += new_heap_size;
+    heaps_space->num_heaps++;
     heaps_used++;
-    heaps_space->heap_slots += heaps_space->heap_slots_increment;
-    heaps_space->heap_slots_increment *= heap_slots_growth_factor;
-    if (heaps_space->heap_slots <= 0) heaps_space->heap_slots = heap_min_slots;
 
-    while (p < pend) {
-	p->as.free.flags = 0;
-	push_freelist(heaps_space, p);
-	p++;
+    /* Add to freelist in reverse order. */
+    while (pend > p) {
+        pend--;
+        push_freelist(heaps_space, pend);
     }
+
+    return new_heap_size;
 }
 
 #define RANY(o) ((RVALUE*)(o))
@@ -1158,109 +924,87 @@ pop_freelist(heaps_space_t* heaps_space)
 {
     VALUE obj = (VALUE)heaps_space->freelist;
     heaps_space->freelist = heaps_space->freelist->as.free.next;
-    MEMZERO((void*)obj, RVALUE, 1);
+    RANY(obj)->as.free.next = 0;
 #ifdef GC_DEBUG
-    RANY(obj)->file = ruby_sourcefile;
-    RANY(obj)->line = ruby_sourceline;
+    MEMZERO((void*)obj, RVALUE, 1);
+    if (GC_DEBUG_ON && gc_debug_dump) {
+        RANY(obj)->source_pos = gc_debug_get_obj_source_pos();
+    }
 #endif
-    return obj;
-}
-
-VALUE
-rb_newobj_eden(int type)
-{
-    VALUE obj;
-
-    if (during_gc)
-	rb_bug("object allocation during garbage collection phase");
-
-    if (!normal_heaps_space.freelist) garbage_collect();
-
-    obj = pop_freelist(&normal_heaps_space);
-
-    if(verbose_gc_stats && type != -1 && (rand() % 1000) == 1) {
-        ruby_set_current_source();
-        if (!ruby_sourcefile) {
-            fprintf(gc_data_file, "   New eden allocation. Type: %d\n", type);
-        }
-        else if (!ruby_sourceline) {
-            fprintf(gc_data_file, "   New eden allocation in %s. Type: %d\n", ruby_sourcefile, type);
-        }
-        else {
-            fprintf(gc_data_file, "   New eden allocation in %s:%d. Type: %d\n", ruby_sourcefile, ruby_sourceline, type);
-        }
-    }
-
-    live_objects++;
-    if(live_objects > max_live_objects) {
-	max_live_objects = live_objects;
-    }
-    allocated_objects++;
     return obj;
 }
 
 static inline void
 add_heap_if_needed(heaps_space_t* heaps_space)
 {
-    if(!heaps_space->freelist) {
-	add_heap(heaps_space);
+    int new_heap_size;
+    if (!heaps_space->freelist) {
+        new_heap_size = add_heap(heaps_space);
+        GC_DEBUG_PRINTF("*** %s heap added (out of space) (size %d) ***\n",
+          lifetime_name[heaps_space->lifetime], new_heap_size)
     }
 }
 
+/* Legacy gem compatibility only. Do not use. */
 VALUE
-rb_temp_enable_longlife()
-{
-  int old = longlife_temp_disable;
-  longlife_temp_disable = Qfalse;
-  return old;
+rb_newobj() {
+    return rb_newobj_eden();
 }
 
 VALUE
-rb_temp_disable_longlife()
-{
-  int old = longlife_temp_disable;
-  longlife_temp_disable = Qtrue;
-  return old;
-}
-
-VALUE
-rb_newobj_longlife(int type)
+rb_newobj_eden()
 {
     VALUE obj;
 
-    if (longlife_disabled == Qtrue || longlife_temp_disable == Qtrue)
-        return rb_newobj_eden(type);
+#ifdef GC_DEBUG
+    if (during_gc) {
+        rb_bug("object allocation during garbage collection phase");
+    }
+    if (gc_debug_stress) {
+        longlife_collection = Qtrue;
+        garbage_collect("GC stress is enabled");
+    }
+#endif
+    if (!eden_heaps_space.freelist) {
+      garbage_collect("no free space in the eden");
+    }
 
-    if (during_gc)
-	rb_bug("object allocation during garbage collection phase");
+    add_heap_if_needed(&eden_heaps_space);
+    obj = pop_freelist(&eden_heaps_space);
+
+    allocated_objects++;
+    return obj;
+}
+
+VALUE
+rb_newobj_longlife()
+{
+    VALUE obj;
+
+#ifdef GC_DEBUG
+    if (gc_debug_longlife_disabled) {
+        return rb_newobj_eden();
+    }
+    if (during_gc) {
+        rb_bug("object allocation during garbage collection phase");
+    }
+    if (gc_debug_stress) {
+        longlife_collection = Qtrue;
+        garbage_collect("GC stress is enabled");
+    }
+#endif
+    if (!longlife_heaps_space.freelist) {
+        longlife_collection = Qtrue;
+        garbage_collect("no free space in the longlife");
+    }
 
     add_heap_if_needed(&longlife_heaps_space);
     obj = pop_freelist(&longlife_heaps_space);
-    RBASIC(obj)->flags |= FL_LONGLIFE;
-    if(!longlife_allocation_since_last_gc) {
-        // Yes, there was an allocation
-        longlife_allocation_since_last_gc = 1;
-        // Reset the exponential backoff cycle
-        longlife_gc_after_gc_cycles = longlife_initial_delay;
-    }
+    RBASIC(obj)->flags |= (FL_LONGLIFE|FL_MOVE);
 
-    if(verbose_gc_stats && type != -1 && (rand() % 1000) == 1) {
-        ruby_set_current_source();
-        if (!ruby_sourcefile) {
-            fprintf(gc_data_file, "   New longlife allocation. Type: %d\n", type);
-        }
-        else if (!ruby_sourceline) {
-            fprintf(gc_data_file, "   New longlife allocation in %s. Type: %d\n", ruby_sourcefile, type);
-        }
-        else {
-            fprintf(gc_data_file, "   New longlife allocation in %s:%d. Type: %d\n", ruby_sourcefile, ruby_sourceline, type);
-        }
-    }
+    add_to_longlife_recent_allocations(obj);
 
-    longlife_live_objects++;
-    if(longlife_live_objects > longlife_max_live_objects) {
-	longlife_max_live_objects = longlife_live_objects;
-    }
+    allocated_objects++;
     return obj;
 }
 
@@ -1272,7 +1016,9 @@ rb_data_object_alloc(klass, datap, dmark, dfree)
     RUBY_DATA_FUNC dfree;
 {
     NEWOBJ(data, struct RData);
-    if (klass) Check_Type(klass, T_CLASS);
+    if (klass) {
+      Check_Type(klass, T_CLASS);
+    }
     OBJSETUP(data, klass, T_DATA);
     data->data = datap;
     data->dfree = dfree;
@@ -1350,11 +1096,13 @@ ruby_stack_length(base)
     SET_STACK_END;
     VALUE *start;
     if (rb_curr_thread == rb_main_thread) {
-	start = rb_gc_stack_start;
+        start = rb_gc_stack_start;
     } else {
-	start = rb_curr_thread->stk_base;
+        start = rb_curr_thread->stk_base;
     }
-    if (base) *base = STACK_UPPER(start, STACK_END);
+    if (base) {
+      *base = STACK_UPPER(start, STACK_END);
+    }
     return STACK_LENGTH(start);
 }
 
@@ -1363,15 +1111,15 @@ ruby_stack_check()
 {
     SET_STACK_END;
     if (!rb_main_thread || rb_curr_thread == rb_main_thread) {
-	return __stack_past(stack_limit, STACK_END);
+        return __stack_past(stack_limit, STACK_END);
     } else {
-	/* ruby_stack_check() is only called periodically, but we want to
-	 * detect a stack overflow before the thread's guard area is accessed.
-	 * So we append a '+ getpagesize()' to the address check.
-	 *
-	 * TODO: support architectures on which the stack grows upwards.
-	 */
-	return __stack_past(rb_curr_thread->guard + getpagesize(), STACK_END);
+        /* ruby_stack_check() is only called periodically, but we want to
+         * detect a stack overflow before the thread's guard area is accessed.
+         * So we append a '+ getpagesize()' to the address check.
+         *
+         * TODO: support architectures on which the stack grows upwards.
+         */
+        return __stack_past(rb_curr_thread->guard + getpagesize(), STACK_END);
     }
 }
 
@@ -1425,14 +1173,21 @@ static inline void
 push_mark_stack(VALUE ptr)
 {
     if (!mark_stack_overflow) {
-	if (mark_stack_ptr - mark_stack < MARK_STACK_MAX)
-	    *mark_stack_ptr++ = ptr;
-	else
-	    mark_stack_overflow = 1;
+        if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
+            *mark_stack_ptr++ = ptr;
+        } else {
+            mark_stack_overflow = 1;
+        }
     }
 }
 
 static st_table *source_filenames;
+
+void
+Init_source_filenames()
+{
+    source_filenames = st_init_strtable();
+}
 
 char *
 rb_source_filename(f)
@@ -1441,13 +1196,13 @@ rb_source_filename(f)
     st_data_t name;
 
     if (!st_lookup(source_filenames, (st_data_t)f, &name)) {
-	long len = strlen(f) + 1;
-	char *ptr = ALLOC_N(char, len + 1);
-	name = (st_data_t)ptr;
-	*ptr++ = 0;
-	MEMCPY(ptr, f, char, len);
-	st_add_direct(source_filenames, (st_data_t)ptr, name);
-	return ptr;
+        long len = strlen(f) + 1;
+        char *ptr = ALLOC_N(char, len + 1);
+        name = (st_data_t)ptr;
+        *ptr++ = 0;
+        MEMCPY(ptr, f, char, len);
+        st_add_direct(source_filenames, (st_data_t)ptr, name);
+        return ptr;
     }
     return (char *)name + 1;
 }
@@ -1457,7 +1212,7 @@ mark_source_filename(f)
     char *f;
 {
     if (f) {
-	rb_mark_table_add_filename(f);
+        rb_mark_table_add_filename(f);
     }
 }
 
@@ -1466,17 +1221,51 @@ sweep_source_filename(key, value)
     char *key, *value;
 {
     if (rb_mark_table_contains_filename(value + 1)) {
-	rb_mark_table_remove_filename(value + 1);
-	return ST_CONTINUE;
+        rb_mark_table_remove_filename(value + 1);
+        return ST_CONTINUE;
     }
     else {
-	rb_mark_table_remove_filename(value + 1);
-	free(value);
-	return ST_DELETE;
+        rb_mark_table_remove_filename(value + 1);
+        free(value);
+        return ST_DELETE;
     }
 }
 
-#define gc_mark(ptr) rb_gc_mark(ptr)
+#ifdef GC_DEBUG
+void
+Init_source_positions()
+{
+    source_positions = st_init_table_with_size(&source_positions_type, SOURCE_POS_INIT_SIZE);
+}
+
+static void
+mark_source_pos(source_position_t *source_pos)
+{
+    if (GC_DEBUG_ON && gc_debug_dump && longlife_collection && source_pos) {
+        if (!rb_mark_table_contains_source_pos(source_pos)) {
+            rb_mark_table_add_source_pos(source_pos);
+            mark_source_filename(source_pos->file);
+            mark_source_pos(source_pos->parent);
+        }
+    }
+}
+
+static int
+sweep_source_pos(char *key, source_position_t *source_pos)
+{
+    if (rb_mark_table_contains_source_pos(source_pos)) {
+        rb_mark_table_remove_source_pos(source_pos);
+        return ST_CONTINUE;
+    }
+    else {
+        rb_mark_table_remove_source_pos(source_pos);
+        st_delete(source_positions, (st_data_t *)source_pos, 0);
+        free(source_pos);
+        return ST_DELETE;
+    }
+}
+#endif
+
 static void gc_mark_children _((VALUE ptr));
 
 static void
@@ -1487,14 +1276,14 @@ gc_mark_all()
 
     init_mark_stack();
     while (--heap >= heaps) {
-	p = heap->slot; pend = p + heap->limit;
-	while (p < pend) {
-	    if (rb_mark_table_heap_contains(heap, p) &&
-	        BUILTIN_TYPE(p) != T_DEFERRED) {
-		gc_mark_children((VALUE)p);
-	    }
-	    p++;
-	}
+        p = heap->slot; pend = p + heap->limit;
+        while (p < pend) {
+            if (rb_mark_table_heap_contains(heap, p) &&
+                BUILTIN_TYPE(p) != T_DEFERRED) {
+                gc_mark_children((VALUE)p);
+            }
+            p++;
+        }
     }
 }
 
@@ -1522,13 +1311,17 @@ is_pointer_to_heap(ptr)
     RVALUE *p = RANY(ptr);
     struct heaps_slot *heap;
 
-    if (p < lomem || p > himem || (VALUE)p % sizeof(RVALUE)) return Qfalse;
+    if (p < lomem || p > himem || (VALUE)p % sizeof(RVALUE)) {
+      return Qfalse;
+    }
 
     /* check if p looks like a pointer */
     heap = heaps+heaps_used;
-    while (--heap >= heaps)
-      if (p >= heap->slot && p < heap->slot + heap->limit)
-        return Qtrue;
+    while (--heap >= heaps) {
+        if (p >= heap->slot && p < heap->slot + heap->limit) {
+            return Qtrue;
+        }
+    }
     return Qfalse;
 }
 
@@ -1539,14 +1332,43 @@ is_pointer_to_longlife_heap(ptr)
     RVALUE *p = RANY(ptr);
     struct heaps_slot *heap;
 
-    if (p < lomem || p > himem || (VALUE)p % sizeof(RVALUE)) return Qfalse;
+    if (p < lomem || p > himem || (VALUE)p % sizeof(RVALUE)) {
+        return Qfalse;
+    }
 
     /* check if p looks like a pointer */
     heap = heaps+heaps_used;
-    while (--heap >= heaps)
-      if (p >= heap->slot && p < heap->slot + heap->limit && heap->lifetime == lifetime_longlife)
-        return Qtrue;
+    while (--heap >= heaps) {
+        if (p >= heap->slot && p < heap->slot + heap->limit && heap->lifetime == lifetime_longlife) {
+            return Qtrue;
+        }
+    }
     return Qfalse;
+}
+
+static void
+add_to_longlife_recent_allocations(VALUE ptr)
+{
+    longlife_recent_allocations_set_t *tmp;
+    if (longlife_recent_allocations_set_freed) {
+        tmp = longlife_recent_allocations_set_freed;
+        longlife_recent_allocations_set_freed = longlife_recent_allocations_set_freed->next;
+    }
+    else {
+        tmp = ALLOC(longlife_recent_allocations_set_t);
+    }
+    tmp->next = longlife_recent_allocations_set_ptr;
+    tmp->obj = (RVALUE *)ptr;
+    longlife_recent_allocations_set_ptr = tmp;
+}
+
+/* Call this if you mutate an object that might be on the longlife heap. */
+void
+maybe_add_to_longlife_recent_allocations(VALUE ptr)
+{
+    if (ptr && OBJ_LONGLIVED(ptr)) {
+        add_to_longlife_recent_allocations(ptr);
+    }
 }
 
 static VALUE
@@ -1555,7 +1377,7 @@ rb_gc_write_barrier(VALUE ptr)
     RVALUE *obj = RANY(ptr);
 
     if (ptr && !SPECIAL_CONST_P(ptr) && obj->as.basic.flags && !(RBASIC(ptr)->flags & (FL_REMEMBERED_SET|FL_LONGLIFE))) {
-	remembered_set_t *tmp;
+        remembered_set_t *tmp;
         if (remembered_set_freed) {
             tmp = remembered_set_freed;
             remembered_set_freed = remembered_set_freed->next;
@@ -1579,10 +1401,10 @@ mark_locations_array(x, n)
     VALUE v;
     while (n--) {
         v = *x;
-	if (is_pointer_to_heap((void *)v)) {
-	    gc_mark(v);
-	}
-	x++;
+        if (is_pointer_to_heap((void *)v)) {
+            rb_gc_mark(v);
+        }
+        x++;
     }
 }
 
@@ -1598,7 +1420,7 @@ mark_entry(key, value)
     ID key;
     VALUE value;
 {
-    gc_mark(value);
+    rb_gc_mark(value);
     return ST_CONTINUE;
 }
 
@@ -1616,8 +1438,8 @@ mark_keyvalue(key, value)
     VALUE key;
     VALUE value;
 {
-    gc_mark(key);
-    gc_mark(value);
+    rb_gc_mark(key);
+    rb_gc_mark(value);
     return ST_CONTINUE;
 }
 
@@ -1625,7 +1447,7 @@ static int
 mark_key(key, value)
     VALUE key, value;
 {
-    gc_mark(key);
+    rb_gc_mark(key);
     return ST_CONTINUE;
 }
 
@@ -1652,7 +1474,7 @@ rb_gc_mark_maybe(obj)
     VALUE obj;
 {
     if (is_pointer_to_heap((void *)obj)) {
-	gc_mark(obj);
+        rb_gc_mark(obj);
     }
 }
 
@@ -1666,7 +1488,11 @@ rb_gc_mark(ptr)
     if (rb_special_const_p(ptr)) return; /* special const not marked */
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (rb_mark_table_contains(obj)) return;  /* already marked */
+
     rb_mark_table_add(obj);
+#ifdef GC_DEBUG
+    mark_source_pos(obj->source_pos);
+#endif
 
     if (__stack_past(gc_stack_limit, STACK_END))
       push_mark_stack(ptr);
@@ -1681,283 +1507,276 @@ gc_mark_children(ptr)
 {
     RVALUE *obj = RANY(ptr);
 
-    goto marking;		/* skip */
+    goto marking;               /* skip */
 
   again:
     obj = RANY(ptr);
     if (rb_special_const_p(ptr)) return; /* special const not marked */
     if (obj->as.basic.flags == 0) return;       /* free cell */
-    if (!longlife_collection && (obj->as.basic.flags & FL_LONGLIFE)) return; /* ref from normal to longlife */
+    if (!(longlife_collection || gc_debug_always_mark) && OBJ_LONGLIVED(obj)) return; /* ref from normal to longlife */
     if (rb_mark_table_contains(obj)) return;  /* already marked */
+
     rb_mark_table_add(obj);
+#ifdef GC_DEBUG
+    mark_source_pos(obj->source_pos);
+#endif
 
   marking:
     if (FL_TEST(obj, FL_EXIVAR)) {
-	rb_mark_generic_ivar(ptr);
+        rb_mark_generic_ivar(ptr);
     }
 
     switch (obj->as.basic.flags & T_MASK) {
       case T_NIL:
       case T_FIXNUM:
-	rb_bug("rb_gc_mark() called for broken object");
-	break;
+        rb_bug("rb_gc_mark() called for broken object");
+        break;
 
       case T_NODE:
-	mark_source_filename(obj->as.node.nd_file);
-	switch (nd_type(obj)) {
-	  case NODE_IF:		/* 1,2,3 */
-	  case NODE_FOR:
-	  case NODE_ITER:
-	  case NODE_CREF:
-	  case NODE_WHEN:
-	  case NODE_MASGN:
-	  case NODE_RESCUE:
-	  case NODE_RESBODY:
-	  case NODE_CLASS:
-	    gc_mark((VALUE)obj->as.node.u2.node);
-	    /* fall through */
-	  case NODE_BLOCK:	/* 1,3 */
-	  case NODE_ARRAY:
-	  case NODE_DSTR:
-	  case NODE_DXSTR:
-	  case NODE_DREGX:
-	  case NODE_DREGX_ONCE:
-	  case NODE_FBODY:
-	  case NODE_ENSURE:
-	  case NODE_CALL:
-	  case NODE_DEFS:
-	  case NODE_OP_ASGN1:
-	    gc_mark((VALUE)obj->as.node.u1.node);
-	    /* fall through */
-	  case NODE_SUPER:	/* 3 */
-	  case NODE_FCALL:
-	  case NODE_DEFN:
-	  case NODE_NEWLINE:
-	    ptr = (VALUE)obj->as.node.u3.node;
-	    goto again;
+        if (longlife_collection) {
+            mark_source_filename(obj->as.node.nd_file);
+        }
+        switch (nd_type(obj)) {
+          case NODE_IF:         /* 1,2,3 */
+          case NODE_FOR:
+          case NODE_ITER:
+          case NODE_CREF:
+          case NODE_WHEN:
+          case NODE_MASGN:
+          case NODE_RESCUE:
+          case NODE_RESBODY:
+          case NODE_CLASS:
+            rb_gc_mark((VALUE)obj->as.node.u2.node);
+            /* fall through */
+          case NODE_BLOCK:      /* 1,3 */
+          case NODE_ARRAY:
+          case NODE_DSTR:
+          case NODE_DXSTR:
+          case NODE_DREGX:
+          case NODE_DREGX_ONCE:
+          case NODE_FBODY:
+          case NODE_ENSURE:
+          case NODE_CALL:
+          case NODE_DEFS:
+          case NODE_OP_ASGN1:
+            rb_gc_mark((VALUE)obj->as.node.u1.node);
+            /* fall through */
+          case NODE_SUPER:      /* 3 */
+          case NODE_FCALL:
+          case NODE_DEFN:
+          case NODE_NEWLINE:
+            ptr = (VALUE)obj->as.node.u3.node;
+            goto again;
 
-	  case NODE_WHILE:	/* 1,2 */
-	  case NODE_UNTIL:
-	  case NODE_AND:
-	  case NODE_OR:
-	  case NODE_CASE:
-	  case NODE_SCLASS:
-	  case NODE_DOT2:
-	  case NODE_DOT3:
-	  case NODE_FLIP2:
-	  case NODE_FLIP3:
-	  case NODE_MATCH2:
-	  case NODE_MATCH3:
-	  case NODE_OP_ASGN_OR:
-	  case NODE_OP_ASGN_AND:
-	  case NODE_MODULE:
-	  case NODE_ALIAS:
-	  case NODE_VALIAS:
-	  case NODE_ARGS:
-	    gc_mark((VALUE)obj->as.node.u1.node);
-	    /* fall through */
-	  case NODE_METHOD:	/* 2 */
-	  case NODE_NOT:
-	  case NODE_GASGN:
-	  case NODE_LASGN:
-	  case NODE_DASGN:
-	  case NODE_DASGN_CURR:
-	  case NODE_IASGN:
-	  case NODE_CVDECL:
-	  case NODE_CVASGN:
-	  case NODE_COLON3:
-	  case NODE_OPT_N:
-	  case NODE_EVSTR:
-	  case NODE_UNDEF:
-	    ptr = (VALUE)obj->as.node.u2.node;
-	    goto again;
+          case NODE_WHILE:      /* 1,2 */
+          case NODE_UNTIL:
+          case NODE_AND:
+          case NODE_OR:
+          case NODE_CASE:
+          case NODE_SCLASS:
+          case NODE_DOT2:
+          case NODE_DOT3:
+          case NODE_FLIP2:
+          case NODE_FLIP3:
+          case NODE_MATCH2:
+          case NODE_MATCH3:
+          case NODE_OP_ASGN_OR:
+          case NODE_OP_ASGN_AND:
+          case NODE_MODULE:
+          case NODE_ALIAS:
+          case NODE_VALIAS:
+          case NODE_ARGS:
+            rb_gc_mark((VALUE)obj->as.node.u1.node);
+            /* fall through */
+          case NODE_METHOD:     /* 2 */
+          case NODE_NOT:
+          case NODE_GASGN:
+          case NODE_LASGN:
+          case NODE_DASGN:
+          case NODE_DASGN_CURR:
+          case NODE_IASGN:
+          case NODE_CVDECL:
+          case NODE_CVASGN:
+          case NODE_COLON3:
+          case NODE_OPT_N:
+          case NODE_EVSTR:
+          case NODE_UNDEF:
+            ptr = (VALUE)obj->as.node.u2.node;
+            goto again;
 
-	  case NODE_HASH:	/* 1 */
-	  case NODE_LIT:
-	  case NODE_STR:
-	  case NODE_XSTR:
-	  case NODE_DEFINED:
-	  case NODE_MATCH:
-	  case NODE_RETURN:
-	  case NODE_BREAK:
-	  case NODE_NEXT:
-	  case NODE_YIELD:
-	  case NODE_COLON2:
-	  case NODE_SPLAT:
-	  case NODE_TO_ARY:
-	  case NODE_SVALUE:
-	    ptr = (VALUE)obj->as.node.u1.node;
-	    goto again;
+          case NODE_HASH:       /* 1 */
+          case NODE_LIT:
+          case NODE_STR:
+          case NODE_XSTR:
+          case NODE_DEFINED:
+          case NODE_MATCH:
+          case NODE_RETURN:
+          case NODE_BREAK:
+          case NODE_NEXT:
+          case NODE_YIELD:
+          case NODE_COLON2:
+          case NODE_SPLAT:
+          case NODE_TO_ARY:
+          case NODE_SVALUE:
+            ptr = (VALUE)obj->as.node.u1.node;
+            goto again;
 
-	  case NODE_SCOPE:	/* 2,3 */
-	  case NODE_BLOCK_PASS:
-	  case NODE_CDECL:
-	    gc_mark((VALUE)obj->as.node.u3.node);
-	    ptr = (VALUE)obj->as.node.u2.node;
-	    goto again;
+          case NODE_SCOPE:      /* 2,3 */
+          case NODE_BLOCK_PASS:
+          case NODE_CDECL:
+            rb_gc_mark((VALUE)obj->as.node.u3.node);
+            ptr = (VALUE)obj->as.node.u2.node;
+            goto again;
 
-	  case NODE_ZARRAY:	/* - */
-	  case NODE_ZSUPER:
-	  case NODE_CFUNC:
-	  case NODE_VCALL:
-	  case NODE_GVAR:
-	  case NODE_LVAR:
-	  case NODE_DVAR:
-	  case NODE_IVAR:
-	  case NODE_CVAR:
-	  case NODE_NTH_REF:
-	  case NODE_BACK_REF:
-	  case NODE_REDO:
-	  case NODE_RETRY:
-	  case NODE_SELF:
-	  case NODE_NIL:
-	  case NODE_TRUE:
-	  case NODE_FALSE:
-	  case NODE_ATTRSET:
-	  case NODE_BLOCK_ARG:
-	  case NODE_POSTEXE:
-	    break;
-	  case NODE_ALLOCA:
-	    mark_locations_array((VALUE*)obj->as.node.u1.value,
-				 obj->as.node.u3.cnt);
-	    ptr = (VALUE)obj->as.node.u2.node;
-	    goto again;
+          case NODE_ZARRAY:     /* - */
+          case NODE_ZSUPER:
+          case NODE_CFUNC:
+          case NODE_VCALL:
+          case NODE_GVAR:
+          case NODE_LVAR:
+          case NODE_DVAR:
+          case NODE_IVAR:
+          case NODE_CVAR:
+          case NODE_NTH_REF:
+          case NODE_BACK_REF:
+          case NODE_REDO:
+          case NODE_RETRY:
+          case NODE_SELF:
+          case NODE_NIL:
+          case NODE_TRUE:
+          case NODE_FALSE:
+          case NODE_ATTRSET:
+          case NODE_BLOCK_ARG:
+          case NODE_POSTEXE:
+            break;
+          case NODE_ALLOCA:
+            mark_locations_array((VALUE*)obj->as.node.u1.value,
+                                 obj->as.node.u3.cnt);
+            ptr = (VALUE)obj->as.node.u2.node;
+            goto again;
 
-	  default:		/* unlisted NODE */
-	    if (is_pointer_to_heap(obj->as.node.u1.node)) {
-		gc_mark((VALUE)obj->as.node.u1.node);
-	    }
-	    if (is_pointer_to_heap(obj->as.node.u2.node)) {
-		gc_mark((VALUE)obj->as.node.u2.node);
-	    }
-	    if (is_pointer_to_heap(obj->as.node.u3.node)) {
+          default:              /* unlisted NODE */
+            if (is_pointer_to_heap(obj->as.node.u1.node)) {
+                rb_gc_mark((VALUE)obj->as.node.u1.node);
+            }
+            if (is_pointer_to_heap(obj->as.node.u2.node)) {
+                rb_gc_mark((VALUE)obj->as.node.u2.node);
+            }
+            if (is_pointer_to_heap(obj->as.node.u3.node)) {
                 ptr = (VALUE)obj->as.node.u3.node;
                 goto again;
-	    }
-	}
-        return;	/* no need to mark class. */
+            }
+        }
+        return; /* no need to mark class. */
     }
 
-    gc_mark(obj->as.basic.klass);
+    rb_gc_mark(obj->as.basic.klass);
     switch (obj->as.basic.flags & T_MASK) {
       case T_ICLASS:
       case T_CLASS:
       case T_MODULE:
-	mark_tbl(obj->as.klass.m_tbl);
-	mark_tbl(obj->as.klass.iv_tbl);
-	ptr = obj->as.klass.super;
-	goto again;
+        mark_tbl(obj->as.klass.m_tbl);
+        mark_tbl(obj->as.klass.iv_tbl);
+        ptr = obj->as.klass.super;
+        goto again;
 
       case T_ARRAY:
-	if (FL_TEST(obj, ELTS_SHARED)) {
-	    ptr = obj->as.array.aux.shared;
-	    goto again;
-	}
-	else {
-	    VALUE *ptr = obj->as.array.ptr;
+        if (FL_TEST(obj, ELTS_SHARED)) {
+            ptr = obj->as.array.aux.shared;
+            goto again;
+        }
+        else {
+            VALUE *ptr = obj->as.array.ptr;
             VALUE *pend = ptr + obj->as.array.len;
-	    while (ptr < pend) {
-		gc_mark(*ptr++);
-	    }
-	}
-	break;
+            while (ptr < pend) {
+                rb_gc_mark(*ptr++);
+            }
+        }
+        break;
 
       case T_HASH:
-	mark_hash(obj->as.hash.tbl);
-	ptr = obj->as.hash.ifnone;
-	goto again;
+        mark_hash(obj->as.hash.tbl);
+        ptr = obj->as.hash.ifnone;
+        goto again;
 
       case T_STRING:
 #define STR_ASSOC FL_USER3   /* copied from string.c */
-	if (FL_TEST(obj, ELTS_SHARED|STR_ASSOC)) {
-	    ptr = obj->as.string.aux.shared;
-	    goto again;
-	}
-	break;
+        if (FL_TEST(obj, ELTS_SHARED|STR_ASSOC)) {
+            ptr = obj->as.string.aux.shared;
+            goto again;
+        }
+        break;
 
       case T_DATA:
-	if (obj->as.data.dmark) (*obj->as.data.dmark)(DATA_PTR(obj));
-	break;
+        if (obj->as.data.dmark) (*obj->as.data.dmark)(DATA_PTR(obj));
+        break;
 
       case T_OBJECT:
-	mark_tbl(obj->as.object.iv_tbl);
-	break;
+        mark_tbl(obj->as.object.iv_tbl);
+        break;
 
       case T_FILE:
       case T_REGEXP:
       case T_FLOAT:
       case T_BIGNUM:
       case T_BLKTAG:
-	break;
+        break;
 
       case T_MATCH:
-	if (obj->as.match.str) {
-	    ptr = obj->as.match.str;
-	    goto again;
-	}
-	break;
+        if (obj->as.match.str) {
+            ptr = obj->as.match.str;
+            goto again;
+        }
+        break;
 
       case T_VARMAP:
-	gc_mark(obj->as.varmap.val);
-	ptr = (VALUE)obj->as.varmap.next;
-	goto again;
+        rb_gc_mark(obj->as.varmap.val);
+        ptr = (VALUE)obj->as.varmap.next;
+        goto again;
 
       case T_SCOPE:
-	if (obj->as.scope.local_vars && (obj->as.scope.flags & SCOPE_MALLOC)) {
-	    int n = obj->as.scope.local_tbl[0]+1;
-	    VALUE *vars = &obj->as.scope.local_vars[-1];
+        if (obj->as.scope.local_vars && (obj->as.scope.flags & SCOPE_MALLOC)) {
+            int n = obj->as.scope.local_tbl[0]+1;
+            VALUE *vars = &obj->as.scope.local_vars[-1];
 
-	    while (n--) {
-		gc_mark(*vars++);
-	    }
-	}
-	break;
+            while (n--) {
+                rb_gc_mark(*vars++);
+            }
+        }
+        break;
 
       case T_STRUCT:
-	{
-	    VALUE *ptr = obj->as.rstruct.ptr;
+        {
+            VALUE *ptr = obj->as.rstruct.ptr;
             VALUE *pend = ptr + obj->as.rstruct.len;
             while (ptr < pend)
-	       gc_mark(*ptr++);
-	}
-	break;
+               rb_gc_mark(*ptr++);
+        }
+        break;
 
       default:
-	rb_bug("rb_gc_mark(): unknown data type 0x%lx(0x%lx) %s",
-	       obj->as.basic.flags & T_MASK, obj,
-	       is_pointer_to_heap(obj) ? "corrupted object" : "non object");
+        rb_bug("rb_gc_mark(): unknown data type 0x%lx(0x%lx) %s",
+               obj->as.basic.flags & T_MASK, obj,
+               is_pointer_to_heap(obj) ? "corrupted object" : "non object");
     }
 }
 
 static int obj_free _((VALUE));
 
-static inline void
-add_freelist(heaps_space_t* heaps_space, RVALUE *p)
-{
-    /* Do not touch the fields if they don't have to be modified.
-     * This is in order to preserve copy-on-write semantics.
-     */
-    if (p->as.free.flags != 0)
-	p->as.free.flags = 0;
-    if (p->as.free.next != heaps_space->freelist) {
-	push_freelist(heaps_space, p);
-    }
-}
-
 static void add_to_correct_freelist(RVALUE *p)
 {
-    int has_longlife_flag = FL_TEST(p, FL_LONGLIFE);
+    int longlived = OBJ_LONGLIVED(p);
     // Has explicit longlife flag
-    if(has_longlife_flag) {
-        add_freelist(&longlife_heaps_space, p);
+    if(longlived) {
+        push_freelist(&longlife_heaps_space, p);
     }
     // Has some flags (so they weren't cleared), but not longlife
-    else if(p->as.free.flags != 0 && !has_longlife_flag) {
-	add_freelist(&normal_heaps_space, p);
+    else if(p->as.free.flags != 0 && !longlived) {
+        push_freelist(&eden_heaps_space, p);
     }
     // If all else fails, use slower is_pointer_to_longlife_heap()
     else {
-        add_freelist(is_pointer_to_longlife_heap(p) ? &longlife_heaps_space : &normal_heaps_space, p);
+        push_freelist(is_pointer_to_longlife_heap(p) ? &longlife_heaps_space : &eden_heaps_space, p);
     }
 }
 
@@ -1966,50 +1785,164 @@ finalize_list(p)
     RVALUE *p;
 {
     while (p) {
-	RVALUE *tmp = p->as.free.next;
-	run_final((VALUE)p);
-	/* Don't free objects that are singletons, or objects that are already freed.
-	 * The latter is to prevent the unnecessary marking of memory pages as dirty,
-	 * which can destroy copy-on-write semantics.
-	 */
-	if (!FL_TEST(p, FL_SINGLETON)) {
-	    rb_mark_table_remove(p);
-	    add_to_correct_freelist(p);
-	}
-	p = tmp;
+        RVALUE *tmp = p->as.free.next;
+        run_final((VALUE)p);
+        /* Don't free objects that are singletons, or objects that are already freed.
+         * The latter is to prevent the unnecessary marking of memory pages as dirty,
+         * which can destroy copy-on-write semantics.
+         */
+        if (!FL_TEST(p, FL_SINGLETON)) {
+            rb_mark_table_remove(p);
+            add_to_correct_freelist(p);
+        }
+        p = tmp;
     }
 }
 
-static char* obj_type(int tp)
+#define CONST_TO_NAME(x) case x: return #x;
+
+char* obj_type(int tp)
 {
     switch (tp) {
-	case T_NIL    : return "NIL";
-	case T_OBJECT : return "OBJECT";
-	case T_CLASS  : return "CLASS";
-	case T_ICLASS : return "ICLASS";
-	case T_MODULE : return "MODULE";
-	case T_FLOAT  : return "FLOAT";
-	case T_STRING : return "STRING";
-	case T_REGEXP : return "REGEXP";
-	case T_ARRAY  : return "ARRAY";
-	case T_FIXNUM : return "FIXNUM";
-	case T_HASH   : return "HASH";
-	case T_STRUCT : return "STRUCT";
-	case T_BIGNUM : return "BIGNUM";
-	case T_FILE   : return "FILE";
+        CONST_TO_NAME(T_NIL)
+        CONST_TO_NAME(T_OBJECT)
+        CONST_TO_NAME(T_CLASS)
+        CONST_TO_NAME(T_ICLASS)
+        CONST_TO_NAME(T_MODULE)
+        CONST_TO_NAME(T_FLOAT)
+        CONST_TO_NAME(T_STRING)
+        CONST_TO_NAME(T_REGEXP)
+        CONST_TO_NAME(T_ARRAY)
+        CONST_TO_NAME(T_FIXNUM)
+        CONST_TO_NAME(T_HASH)
+        CONST_TO_NAME(T_STRUCT)
+        CONST_TO_NAME(T_BIGNUM)
+        CONST_TO_NAME(T_FILE)
 
-	case T_TRUE   : return "TRUE";
-	case T_FALSE  : return "FALSE";
-	case T_DATA   : return "DATA";
-	case T_MATCH  : return "MATCH";
-	case T_SYMBOL : return "SYMBOL";
+        CONST_TO_NAME(T_TRUE)
+        CONST_TO_NAME(T_FALSE)
+        CONST_TO_NAME(T_DATA)
+        CONST_TO_NAME(T_MATCH)
+        CONST_TO_NAME(T_SYMBOL)
 
-	case T_BLKTAG : return "BLKTAG";
-	case T_UNDEF  : return "UNDEF";
-	case T_VARMAP : return "VARMAP";
-	case T_SCOPE  : return "SCOPE";
-	case T_NODE   : return "NODE";
-	default: return "____";
+        CONST_TO_NAME(T_BLKTAG)
+        CONST_TO_NAME(T_UNDEF)
+        CONST_TO_NAME(T_VARMAP)
+        CONST_TO_NAME(T_SCOPE)
+        CONST_TO_NAME(T_NODE)
+        default: return "____";
+    }
+}
+
+char* node_type(int tp)
+{
+    switch (tp) {
+        CONST_TO_NAME(NODE_METHOD)
+        CONST_TO_NAME(NODE_FBODY)
+        CONST_TO_NAME(NODE_CFUNC)
+        CONST_TO_NAME(NODE_SCOPE)
+        CONST_TO_NAME(NODE_BLOCK)
+        CONST_TO_NAME(NODE_IF)
+        CONST_TO_NAME(NODE_CASE)
+        CONST_TO_NAME(NODE_WHEN)
+        CONST_TO_NAME(NODE_OPT_N)
+        CONST_TO_NAME(NODE_WHILE)
+        CONST_TO_NAME(NODE_UNTIL)
+        CONST_TO_NAME(NODE_ITER)
+        CONST_TO_NAME(NODE_FOR)
+        CONST_TO_NAME(NODE_BREAK)
+        CONST_TO_NAME(NODE_NEXT)
+        CONST_TO_NAME(NODE_REDO)
+        CONST_TO_NAME(NODE_RETRY)
+        CONST_TO_NAME(NODE_BEGIN)
+        CONST_TO_NAME(NODE_RESCUE)
+        CONST_TO_NAME(NODE_RESBODY)
+        CONST_TO_NAME(NODE_ENSURE)
+        CONST_TO_NAME(NODE_AND)
+        CONST_TO_NAME(NODE_OR)
+        CONST_TO_NAME(NODE_NOT)
+        CONST_TO_NAME(NODE_MASGN)
+        CONST_TO_NAME(NODE_LASGN)
+        CONST_TO_NAME(NODE_DASGN)
+        CONST_TO_NAME(NODE_DASGN_CURR)
+        CONST_TO_NAME(NODE_GASGN)
+        CONST_TO_NAME(NODE_IASGN)
+        CONST_TO_NAME(NODE_CDECL)
+        CONST_TO_NAME(NODE_CVASGN)
+        CONST_TO_NAME(NODE_CVDECL)
+        CONST_TO_NAME(NODE_OP_ASGN1)
+        CONST_TO_NAME(NODE_OP_ASGN2)
+        CONST_TO_NAME(NODE_OP_ASGN_AND)
+        CONST_TO_NAME(NODE_OP_ASGN_OR)
+        CONST_TO_NAME(NODE_CALL)
+        CONST_TO_NAME(NODE_FCALL)
+        CONST_TO_NAME(NODE_VCALL)
+        CONST_TO_NAME(NODE_SUPER)
+        CONST_TO_NAME(NODE_ZSUPER)
+        CONST_TO_NAME(NODE_ARRAY)
+        CONST_TO_NAME(NODE_ZARRAY)
+        CONST_TO_NAME(NODE_HASH)
+        CONST_TO_NAME(NODE_RETURN)
+        CONST_TO_NAME(NODE_YIELD)
+        CONST_TO_NAME(NODE_LVAR)
+        CONST_TO_NAME(NODE_DVAR)
+        CONST_TO_NAME(NODE_GVAR)
+        CONST_TO_NAME(NODE_IVAR)
+        CONST_TO_NAME(NODE_CONST)
+        CONST_TO_NAME(NODE_CVAR)
+        CONST_TO_NAME(NODE_NTH_REF)
+        CONST_TO_NAME(NODE_BACK_REF)
+        CONST_TO_NAME(NODE_MATCH)
+        CONST_TO_NAME(NODE_MATCH2)
+        CONST_TO_NAME(NODE_MATCH3)
+        CONST_TO_NAME(NODE_LIT)
+        CONST_TO_NAME(NODE_STR)
+        CONST_TO_NAME(NODE_DSTR)
+        CONST_TO_NAME(NODE_XSTR)
+        CONST_TO_NAME(NODE_DXSTR)
+        CONST_TO_NAME(NODE_EVSTR)
+        CONST_TO_NAME(NODE_DREGX)
+        CONST_TO_NAME(NODE_DREGX_ONCE)
+        CONST_TO_NAME(NODE_ARGS)
+        CONST_TO_NAME(NODE_ARGSCAT)
+        CONST_TO_NAME(NODE_ARGSPUSH)
+        CONST_TO_NAME(NODE_SPLAT)
+        CONST_TO_NAME(NODE_TO_ARY)
+        CONST_TO_NAME(NODE_SVALUE)
+        CONST_TO_NAME(NODE_BLOCK_ARG)
+        CONST_TO_NAME(NODE_BLOCK_PASS)
+        CONST_TO_NAME(NODE_DEFN)
+        CONST_TO_NAME(NODE_DEFS)
+        CONST_TO_NAME(NODE_ALIAS)
+        CONST_TO_NAME(NODE_VALIAS)
+        CONST_TO_NAME(NODE_UNDEF)
+        CONST_TO_NAME(NODE_CLASS)
+        CONST_TO_NAME(NODE_MODULE)
+        CONST_TO_NAME(NODE_SCLASS)
+        CONST_TO_NAME(NODE_COLON2)
+        CONST_TO_NAME(NODE_COLON3)
+        CONST_TO_NAME(NODE_CREF)
+        CONST_TO_NAME(NODE_DOT2)
+        CONST_TO_NAME(NODE_DOT3)
+        CONST_TO_NAME(NODE_FLIP2)
+        CONST_TO_NAME(NODE_FLIP3)
+        CONST_TO_NAME(NODE_ATTRSET)
+        CONST_TO_NAME(NODE_SELF)
+        CONST_TO_NAME(NODE_NIL)
+        CONST_TO_NAME(NODE_TRUE)
+        CONST_TO_NAME(NODE_FALSE)
+        CONST_TO_NAME(NODE_DEFINED)
+        CONST_TO_NAME(NODE_NEWLINE)
+        CONST_TO_NAME(NODE_POSTEXE)
+        CONST_TO_NAME(NODE_ALLOCA)
+        CONST_TO_NAME(NODE_DMETHOD)
+        CONST_TO_NAME(NODE_BMETHOD)
+        CONST_TO_NAME(NODE_MEMO)
+        CONST_TO_NAME(NODE_IFUNC)
+        CONST_TO_NAME(NODE_DSYM)
+        CONST_TO_NAME(NODE_ATTRASGN)
+        CONST_TO_NAME(NODE_LAST)
+        default: return "____";
     }
 }
 
@@ -2019,189 +1952,27 @@ free_unused_heaps()
     int i, j;
 
     for (i = j = 1; j < heaps_used; i++) {
-	if (heaps[i].limit == 0) {
-	    free_ruby_heap(heaps[i].membase);
-	    free(heaps[i].marks);
-	    if (heaps[i].lifetime == lifetime_longlife) {
-	        longlife_heaps_used--;
-	    }
-	    heaps_used--;
-	}
-	else {
-	    if (i != j) {
-		heaps[j] = heaps[i];
-	    }
-	    j++;
-	}
+        if (heaps[i].limit == 0) {
+            free(heaps[i].membase);
+            free(heaps[i].marks);
+            heaps_used--;
+        }
+        else {
+            if (i != j) {
+                heaps[j] = heaps[i];
+            }
+            j++;
+        }
     }
 }
 
 void rb_gc_abort_threads(void);
 
 static void
-gc_sweep()
-{
-    RVALUE *p, *pend, *final_list;
-    int freed = 0;
-    int i;
-    long free_min = 0;
-    struct heaps_slot *heap;
-
-    unsigned long really_freed = 0;
-    int free_counts[256];
-    int live_counts[256];
-    int do_gc_stats = gc_statistics && verbose_gc_stats;
-
-    live_objects = 0;
-
-    for (i = 0; i < heaps_used; i++) {
-        free_min += heaps[i].limit;
-    }
-    free_min /= 5;
-    if (free_min < heap_free_min)
-        free_min = heap_free_min;
-
-    if (do_gc_stats) {
-	memset(&free_counts, 0, 256 * sizeof(int));
-	memset(&live_counts, 0, 256 * sizeof(int));
-    }
-
-    if (ruby_in_compile && ruby_parser_stack_on_heap()) {
-	/* should not reclaim nodes during compilation
-           if yacc's semantic stack is not allocated on machine stack */
-	for (i = 0; i < heaps_used; i++) {
-	    heap = &heaps[i];
-	    p = heap->slot; pend = p + heap->limit;
-	    while (p < pend) {
-		if (!rb_mark_table_heap_contains(heap, p) && BUILTIN_TYPE(p) == T_NODE)
-		    gc_mark((VALUE)p);
-		p++;
-	    }
-	}
-    }
-
-    normal_heaps_space.freelist = 0;
-    final_list = deferred_final_list;
-    deferred_final_list = 0;
-    for (i = 0; i < heaps_used; i++) {
-	int n = 0;
-	RVALUE *free = normal_heaps_space.freelist;
-	RVALUE *final = final_list;
-	int deferred;
-
-        if (heaps[i].lifetime == lifetime_longlife) continue;
-
-	heap = &heaps[i];
-	p = heap->slot; pend = p + heap->limit;
-	while (p < pend) {
-	    if (!rb_mark_table_heap_contains(heap, p)) {
-		if (p->as.basic.flags) {
-		    if (do_gc_stats) {
-			really_freed++;
-		    }
-		    if ((deferred = obj_free((VALUE)p)) ||
-		        ((FL_TEST(p, FL_FINALIZE)) && need_call_final)) {
-			/* This object has a finalizer, so don't free it right now, but do it later. */
-			if (!deferred) {
-			    p->as.free.flags = T_DEFERRED;
-			    RDATA(p)->dfree = 0;
-			}
-			rb_mark_table_heap_add(heap, p); /* remain marked */
-			p->as.free.next = final_list;
-			final_list = p;
-		    }
-		    else {
-			if (do_gc_stats) {
-			    int builtin_type = BUILTIN_TYPE(p);
-			    if (builtin_type) {
-				free_counts[builtin_type]++;
-			    }
-			}
-			add_freelist(&normal_heaps_space, p);
-		    }
-		}
-		else {
-		    if (do_gc_stats) {
-			int builtin_type = BUILTIN_TYPE(p);
-			if (builtin_type) {
-			    free_counts[builtin_type]++;
-			}
-		    }
-		    add_freelist(&normal_heaps_space, p);
-		}
-		n++;
-	    }
-	    else if (BUILTIN_TYPE(p) == T_DEFERRED) {
-		/* objects to be finalized */
-		/* do nothing remain marked */
-	    }
-	    else {
-		rb_mark_table_heap_remove(heap, p);
-		live_objects++;
-		if (do_gc_stats) {
-		    live_counts[BUILTIN_TYPE(p)]++;
-		}
-	    }
-	    p++;
-	}
-	if (n == heaps[i].limit && freed > free_min) {
-	    RVALUE *pp;
-
-	    heaps[i].limit = 0;
-	    heaps[i].slotlimit = heaps[i].slot;
-	    for (pp = final_list; pp != final; pp = pp->as.free.next) {
-		pp->as.free.flags |= FL_SINGLETON; /* freeing page mark */
-	    }
-	    normal_heaps_space.freelist = free;	/* cancel this page from freelist */
-	}
-	else {
-	    freed += n;
-	}
-    }
-    if (freed < free_min) {
-	if(longlife_heaps_used) {
-	    longlife_collection = Qtrue;
-	}
-	add_heap(&normal_heaps_space);
-    }
-    during_gc = 0;
-
-    if (do_gc_stats) {
-	fprintf(gc_data_file, "objects processed: %.7lu\n", live_objects+freed);
-	fprintf(gc_data_file, "live objects	: %.7lu\n", live_objects);
-	fprintf(gc_data_file, "freelist objects : %.7lu\n", freed - really_freed);
-	fprintf(gc_data_file, "freed objects	: %.7lu\n", really_freed);
-	for(i = 0; i < 256; i++) {
-	    if (free_counts[i] > 0 || live_counts[i] > 0) {
-		fprintf(gc_data_file,
-			"kept %.7d / freed %.7d objects of type %s\n",
-			live_counts[i], free_counts[i], obj_type(i));
-	    }
-	}
-    }
-
-
-    /* clear finalization list */
-    if (final_list) {
-	deferred_final_list = final_list;
-	if (!normal_heaps_space.freelist && !rb_thread_critical) {
-	    rb_gc_finalize_deferred();
-	}
-	else {
-	    rb_thread_pending = 1;
-	}
-	add_heap_if_needed(&normal_heaps_space);
-	return;
-    }
-    free_unused_heaps();
-}
-
-static void
 remembered_set_recycle()
 {
     remembered_set_t *top = 0, *rem, *next;
 
-    int do_gc_stats = gc_statistics && verbose_gc_stats;
     int recycled = 0;
     int kept = 0;
     rem = remembered_set_ptr;
@@ -2225,76 +1996,241 @@ remembered_set_recycle()
         }
         rem = next;
     }
-    if(do_gc_stats) {
-	fprintf(gc_data_file, "kept in remembered set     : %.7d\n", kept);
-	fprintf(gc_data_file, "removed from remembered set: %.7d\n", recycled);
-    }
+    GC_DEBUG_PRINTF("  Remembered set kept:           %8d\n", kept)
+    GC_DEBUG_PRINTF("  Remembered set recycled:       %8d\n", recycled)
 }
 
 static void
-gc_sweep_for_longlife()
+gc_sweep(heaps_space_t *heaps_space)
 {
-    RVALUE *p, *pend;
-    size_t i, freed = 0, really_freed = 0, live = 0;
-    int free_counts[256];
-    int live_counts[256];
+    RVALUE *p, *pstart, *final_list;
+    struct heaps_slot *heap;
+    int i, deferred, type, new_heap_size, prev_sourcefiles_count;
+    int lt = heaps_space->lifetime;
 
-    int do_gc_stats = gc_statistics && verbose_gc_stats;
-    if (do_gc_stats) {
-	memset(&free_counts, 0, 256 * sizeof(int));
-	memset(&live_counts, 0, 256 * sizeof(int));
+    /* individual heap counters */
+    unsigned long free_slots, newly_freed_slots, finalized_slots, already_freed_slots, live_slots;
+
+    /* heapspace total counters */
+    unsigned long total_free_slots = 0;
+#ifdef GC_DEBUG
+    unsigned long total_newly_freed_slots = 0;
+    unsigned long total_finalized_slots = 0;
+    unsigned long total_already_freed_slots = 0;
+    unsigned long total_live_slots = 0;
+    int empty_heaps = 0;
+
+    int prev_source_positions_count;
+    int free_counts[OBJ_TYPE_COUNT];
+    int live_counts[OBJ_TYPE_COUNT];
+    const char *heaps_space_name;
+
+    if (GC_DEBUG_ON) {
+        heaps_space_name = lifetime_name[lt];
+        if (lt == lifetime_longlife) {
+            fprintf(gc_data_file, "  %s collection (after %d edens)\n", heaps_space_name, gc_eden_cycles_since_last_longlife);
+            fprintf(gc_data_file, "  Objects moved to longlife: %8d\n", longlife_moved_objs_count);
+            gc_eden_cycles_since_last_longlife = 0;
+            longlife_moved_objs_count = 0;
+        } else {
+            fprintf(gc_data_file, "  %s collection\n", heaps_space_name);
+        }
+        MEMZERO(&free_counts, int, OBJ_TYPE_COUNT);
+        MEMZERO(&live_counts, int, OBJ_TYPE_COUNT);
     }
+#endif
 
-    longlife_heaps_space.freelist = 0;
-    for (i = 0; i < heaps_used; i++) {
+    heaps_space->freelist = 0;
+    final_list = deferred_final_list;
+    deferred_final_list = 0;
 
-        if (heaps[i].lifetime == lifetime_normal) continue;
-	p = heaps[i].slot; pend = p + heaps[i].limit;
-	struct heaps_slot* hs = heaps+i;
-	while (p < pend) {
-	    if (!rb_mark_table_heap_contains(hs, p)) {
+#ifdef GC_DEBUG
+    st_table *freed_objects_table, *live_objects_table;
+    if (GC_DEBUG_ON && gc_debug_dump) {
+        freed_objects_table = st_init_table_with_size(&source_positions_type, SOURCE_POS_INIT_TMP_SIZE);
+        live_objects_table = st_init_table_with_size(&source_positions_type, SOURCE_POS_INIT_TMP_SIZE);
+    }
+#endif
+
+    for (i = heaps_used - 1; i >= 0; i--) {
+        heap = &heaps[i];
+        if (heap->lifetime != lt) continue;
+
+        RVALUE *free = heaps_space->freelist;
+        RVALUE *final = final_list;
+
+        finalized_slots = 0;
+        newly_freed_slots = 0;
+        already_freed_slots = 0;
+        live_slots = 0;
+
+        /* Add freed slots in reverse order, so that the first physical free slot is
+            the head of the freelist. This is a feeble attempt to reduce fragmentation. */
+        pstart = heap->slot;
+        p = pstart + heap->limit;
+        while (p-- > pstart) {
+            type = BUILTIN_TYPE(p);
+            if (!rb_mark_table_heap_contains(heap, p)) {
                 if (p->as.basic.flags) {
-                    obj_free((VALUE)p);
-		    if(do_gc_stats) {
-		        really_freed++;
-		        free_counts[BUILTIN_TYPE(p)]++;
-		    }
+#ifdef GC_DEBUG
+                    if (GC_DEBUG_ON && gc_debug_dump) {
+                        gc_debug_add_to_source_pos_table(freed_objects_table, p, type);
+                    }
+#endif
+                    deferred = obj_free((VALUE)p);
+                    if (deferred || ((FL_TEST(p, FL_FINALIZE)) && need_call_final)) {
+                        /* This object has a finalizer, so don't free it right now, but do it later. */
+                        finalized_slots++;
+                        if (!deferred) {
+                            p->as.free.flags = T_DEFERRED;
+                            RDATA(p)->dfree = 0;
+                        }
+                        rb_mark_table_heap_add(heap, p); /* remain marked */
+                        p->as.free.next = final_list;
+                        final_list = p;
+                    } else {
+                        newly_freed_slots++;
+#ifdef GC_DEBUG
+                        if (GC_DEBUG_ON && type) free_counts[type]++;
+#endif
+                        push_freelist(heaps_space, p);
+                    }
+                } else {
+                    already_freed_slots++;
+                    push_freelist(heaps_space, p);
                 }
-		if(do_gc_stats) {
-	            freed++;
-		}
-                add_freelist(&longlife_heaps_space, p);
-	    }
-	    else {
-		live++;
-		if(do_gc_stats) {
-		    live_counts[BUILTIN_TYPE(p)]++;
-		}
-	    }
-	    p++;
-	}
-    }
-    longlife_live_objects = live;
-    if (do_gc_stats) {
-	fprintf(gc_data_file, "longlife objects processed: %.7d\n", live + freed);
-	fprintf(gc_data_file, "longlife live objects     : %.7d\n", live);
-	fprintf(gc_data_file, "longlife freelist objects : %.7d\n", freed - really_freed);
-	fprintf(gc_data_file, "longlife freed objects    : %.7d\n", really_freed);
-	for(i = 0; i < 256; i++) {
-	    if (free_counts[i] > 0 || live_counts[i] > 0) {
-		fprintf(gc_data_file,
-			"kept %.7d / freed %.7d longlife objects of type %s\n",
-			live_counts[i], free_counts[i], obj_type(i));
-	    }
-	}
+#ifdef GC_DEBUG
+            } else if (type == T_DEFERRED) {
+                live_slots++;
+                /* objects to be finalized */
+                /* do nothing remain marked */
+            } else {
+                live_slots++;
+                if (GC_DEBUG_ON) {
+                    live_counts[type]++;
+                    if (gc_debug_dump) {
+                        gc_debug_add_to_source_pos_table(live_objects_table, p, type);
+                    }
+                }
+#endif
+            }
+        }
+
+        free_slots = already_freed_slots + newly_freed_slots + finalized_slots;
+        total_free_slots += free_slots;
+#ifdef GC_DEBUG
+        total_already_freed_slots += already_freed_slots;
+        total_newly_freed_slots += newly_freed_slots;
+        total_finalized_slots += finalized_slots;
+        total_live_slots += live_slots;
+#endif
+
+        if (free_slots == heap->limit) {
+            /* Any unfragmented empty heaps? */
+#ifdef GC_DEBUG
+            empty_heaps++;
+#endif
+            if (gc_debug_stress ||
+                /* Shrink longlife if it's too lazy */
+                (lt == lifetime_longlife && (total_free_slots > heaps_space->heap_slots_total * longlife_laziness)) ||
+                /* Shrink eden if there is a freeable heap and we are over our target size */
+                (lt == lifetime_eden && (heaps_space->num_heaps > eden_heaps))) {
+                GC_DEBUG_PRINTF("  %s heap freed (size %d)\n", heaps_space_name, heap->limit)
+                RVALUE *pp;
+                heaps_space->heap_slots_total -= heap->limit;
+                heaps_space->num_heaps--;
+                heap->limit = 0;
+                heap->slotlimit = heap->slot;
+                for (pp = final_list; pp != final; pp = pp->as.free.next) {
+                    pp->as.free.flags |= FL_SINGLETON; /* freeing page mark */
+                }
+                heaps_space->freelist = free;   /* cancel this page from freelist */
+            }
+        }
     }
 
-    mark_source_filename(ruby_sourcefile);
-    if (source_filenames) {
-        st_foreach(source_filenames, sweep_source_filename, 0);
+    if ((lt == lifetime_longlife &&
+            /* Expand longlife if it's not lazy enough */
+            (total_free_slots < heaps_space->heap_slots_total * longlife_laziness)) ||
+        (lt == lifetime_eden &&
+            /* Add one eden heap at a time (to reduce initial fragmentation) until we reach
+                the target size */
+            (heaps_space->num_heaps < eden_heaps))) {
+          new_heap_size = add_heap(heaps_space);
+          GC_DEBUG_PRINTF("  %s heap added (size %d)\n", heaps_space_name, new_heap_size)
+#ifdef GC_DEBUG
+          total_free_slots += new_heap_size;
+#endif
     }
 
-    remembered_set_recycle();
+    if (lt == lifetime_longlife) {
+        if (final_list) {
+            deferred_final_list = final_list;
+        }
+        mark_source_filename(ruby_sourcefile);
+        longlife_recent_allocations = 0;
+        remembered_set_recycle();
+    } else { /* lt == lifetime_eden */
+        during_gc = 0;
+        /* clear finalization list */
+        if (final_list) {
+            deferred_final_list = final_list;
+            if (!rb_thread_critical) {
+                rb_gc_finalize_deferred();
+            } else {
+                rb_thread_pending = 1;
+            }
+        }
+        free_unused_heaps();
+    }
+
+#ifdef GC_DEBUG
+    if (GC_DEBUG_ON) {
+        fprintf(gc_data_file, "  %s heaps in heapspace:   %8d\n", heaps_space_name, heaps_space->num_heaps);
+        fprintf(gc_data_file, "  %s empty heaps:          %8d\n", heaps_space_name, empty_heaps);
+        fprintf(gc_data_file, "  %s total slots:          %8lu\n", heaps_space_name, total_live_slots + total_free_slots);
+        fprintf(gc_data_file, "  %s already free slots:   %8lu\n", heaps_space_name, total_already_freed_slots);
+        fprintf(gc_data_file, "  %s finalized free slots: %8lu\n", heaps_space_name, total_finalized_slots);
+        fprintf(gc_data_file, "  %s live objects:         %8lu\n", heaps_space_name, total_live_slots);
+        fprintf(gc_data_file, "  %s freed objects:        %8lu\n", heaps_space_name, total_newly_freed_slots);
+
+        if (gc_debug_summary) {
+            fprintf(gc_data_file, "  %s objects summary:\n    Type         Live    Freed\n",  heaps_space_name);
+
+            for(i = 0; i < OBJ_TYPE_COUNT; i++) {
+                if (free_counts[i] > 0 || live_counts[i] > 0) {
+                    fprintf(gc_data_file, "    %-8s %8d %8d\n", obj_type(i), live_counts[i], free_counts[i]);
+                }
+            }
+        }
+
+        if (gc_debug_dump) {
+            gc_debug_dump_source_pos_table(live_objects_table, lt, "live");
+            gc_debug_dump_source_pos_table(freed_objects_table, lt, "freed");
+            st_free_table(live_objects_table);
+            st_free_table(freed_objects_table);
+        }
+    }
+#endif
+
+    if (lt == lifetime_eden) {
+        prev_sourcefiles_count = source_filenames->num_entries;
+#ifdef GC_DEBUG
+        if (source_positions) {
+            prev_source_positions_count = source_positions->num_entries;
+            if (longlife_collection) {
+                st_foreach(source_positions, sweep_source_pos, 0);
+                GC_DEBUG_PRINTF("  Source position freed structs: %8d\n", prev_source_positions_count - source_positions->num_entries)
+            }
+            GC_DEBUG_PRINTF("  Source position live structs:  %8d\n", source_positions->num_entries)
+        }
+#endif
+        if (longlife_collection) {
+            st_foreach(source_filenames, sweep_source_filename, 0);
+            GC_DEBUG_PRINTF("  Source filename freed strings: %8d\n", prev_sourcefiles_count - source_filenames->num_entries)
+        }
+       GC_DEBUG_PRINTF("  Source filename live strings:  %8d\n", source_filenames->num_entries)
+    }
 }
 
 void
@@ -2321,124 +2257,124 @@ obj_free(obj)
       case T_FIXNUM:
       case T_TRUE:
       case T_FALSE:
-	rb_bug("obj_free() called for broken object");
-	break;
+        rb_bug("obj_free() called for broken object");
+        break;
     }
 
     if (FL_TEST(obj, FL_EXIVAR)) {
-	rb_free_generic_ivar((VALUE)obj);
+        rb_free_generic_ivar((VALUE)obj);
     }
 
     switch (BUILTIN_TYPE(obj)) {
       case T_OBJECT:
-	if (RANY(obj)->as.object.iv_tbl) {
-	    st_free_table(RANY(obj)->as.object.iv_tbl);
-	}
-	break;
+        if (RANY(obj)->as.object.iv_tbl) {
+            st_free_table(RANY(obj)->as.object.iv_tbl);
+        }
+        break;
       case T_MODULE:
       case T_CLASS:
-	rb_clear_cache_by_class((VALUE)obj);
-	st_free_table(RANY(obj)->as.klass.m_tbl);
-	if (RANY(obj)->as.object.iv_tbl) {
-	    st_free_table(RANY(obj)->as.object.iv_tbl);
-	}
-	break;
+        rb_clear_cache_by_class((VALUE)obj);
+        st_free_table(RANY(obj)->as.klass.m_tbl);
+        if (RANY(obj)->as.object.iv_tbl) {
+            st_free_table(RANY(obj)->as.object.iv_tbl);
+        }
+        break;
       case T_STRING:
-	if (RANY(obj)->as.string.ptr && !FL_TEST(obj, ELTS_SHARED)) {
-	    RUBY_CRITICAL(free(RANY(obj)->as.string.ptr));
-	}
-	break;
+        if (RANY(obj)->as.string.ptr && !FL_TEST(obj, ELTS_SHARED)) {
+            RUBY_CRITICAL(free(RANY(obj)->as.string.ptr));
+        }
+        break;
       case T_ARRAY:
-	if (RANY(obj)->as.array.ptr && !FL_TEST(obj, ELTS_SHARED)) {
-	    RUBY_CRITICAL(free(RANY(obj)->as.array.ptr));
-	}
-	break;
+        if (RANY(obj)->as.array.ptr && !FL_TEST(obj, ELTS_SHARED)) {
+            RUBY_CRITICAL(free(RANY(obj)->as.array.ptr));
+        }
+        break;
       case T_HASH:
-	if (RANY(obj)->as.hash.tbl) {
-	    st_free_table(RANY(obj)->as.hash.tbl);
-	}
-	break;
+        if (RANY(obj)->as.hash.tbl) {
+            st_free_table(RANY(obj)->as.hash.tbl);
+        }
+        break;
       case T_REGEXP:
-	if (RANY(obj)->as.regexp.ptr) {
-	    re_free_pattern(RANY(obj)->as.regexp.ptr);
-	}
-	if (RANY(obj)->as.regexp.str) {
-	    RUBY_CRITICAL(free(RANY(obj)->as.regexp.str));
-	}
-	break;
+        if (RANY(obj)->as.regexp.ptr) {
+            re_free_pattern(RANY(obj)->as.regexp.ptr);
+        }
+        if (RANY(obj)->as.regexp.str) {
+            RUBY_CRITICAL(free(RANY(obj)->as.regexp.str));
+        }
+        break;
       case T_DATA:
-	if (DATA_PTR(obj)) {
-	    if ((long)RANY(obj)->as.data.dfree == -1) {
-		RUBY_CRITICAL(free(DATA_PTR(obj)));
-	    }
-	    else if (RANY(obj)->as.data.dfree) {
-		make_deferred(RANY(obj));
-		return 1;
-	    }
-	}
-	break;
+        if (DATA_PTR(obj)) {
+            if ((long)RANY(obj)->as.data.dfree == -1) {
+                RUBY_CRITICAL(free(DATA_PTR(obj)));
+            }
+            else if (RANY(obj)->as.data.dfree) {
+                make_deferred(RANY(obj));
+                return 1;
+            }
+        }
+        break;
       case T_MATCH:
-	if (RANY(obj)->as.match.regs) {
-	    re_free_registers(RANY(obj)->as.match.regs);
-	    RUBY_CRITICAL(free(RANY(obj)->as.match.regs));
-	}
-	break;
+        if (RANY(obj)->as.match.regs) {
+            re_free_registers(RANY(obj)->as.match.regs);
+            RUBY_CRITICAL(free(RANY(obj)->as.match.regs));
+        }
+        break;
       case T_FILE:
-	if (RANY(obj)->as.file.fptr) {
-	    struct rb_io_t *fptr = RANY(obj)->as.file.fptr;
-	    make_deferred(RANY(obj));
-	    RDATA(obj)->dfree = (void (*)(void*))rb_io_fptr_finalize;
-	    RDATA(obj)->data = fptr;
-	    return 1;
-	}
-	break;
+        if (RANY(obj)->as.file.fptr) {
+            struct rb_io_t *fptr = RANY(obj)->as.file.fptr;
+            make_deferred(RANY(obj));
+            RDATA(obj)->dfree = (void (*)(void*))rb_io_fptr_finalize;
+            RDATA(obj)->data = fptr;
+            return 1;
+        }
+        break;
       case T_ICLASS:
-	/* iClass shares table with the module */
-	break;
+        /* iClass shares table with the module */
+        break;
 
       case T_FLOAT:
       case T_VARMAP:
       case T_BLKTAG:
-	break;
+        break;
 
       case T_BIGNUM:
-	if (RANY(obj)->as.bignum.digits) {
-	    RUBY_CRITICAL(free(RANY(obj)->as.bignum.digits));
-	}
-	break;
+        if (RANY(obj)->as.bignum.digits) {
+            RUBY_CRITICAL(free(RANY(obj)->as.bignum.digits));
+        }
+        break;
       case T_NODE:
-	switch (nd_type(obj)) {
-	  case NODE_SCOPE:
-	    if (RANY(obj)->as.node.u1.tbl) {
-		RUBY_CRITICAL(free(RANY(obj)->as.node.u1.tbl));
-	    }
-	    break;
-	  case NODE_ALLOCA:
-	    RUBY_CRITICAL(free(RANY(obj)->as.node.u1.node));
-	    break;
-	}
-	break;			/* no need to free iv_tbl */
+        switch (nd_type(obj)) {
+          case NODE_SCOPE:
+            if (RANY(obj)->as.node.u1.tbl) {
+                RUBY_CRITICAL(free(RANY(obj)->as.node.u1.tbl));
+            }
+            break;
+          case NODE_ALLOCA:
+            RUBY_CRITICAL(free(RANY(obj)->as.node.u1.node));
+            break;
+        }
+        break;                  /* no need to free iv_tbl */
 
       case T_SCOPE:
-	if (RANY(obj)->as.scope.local_vars &&
+        if (RANY(obj)->as.scope.local_vars &&
             RANY(obj)->as.scope.flags != SCOPE_ALLOCA) {
-	    VALUE *vars = RANY(obj)->as.scope.local_vars-1;
-	    if (!(RANY(obj)->as.scope.flags & SCOPE_CLONE) && vars[0] == 0)
-		RUBY_CRITICAL(free(RANY(obj)->as.scope.local_tbl));
-	    if ((RANY(obj)->as.scope.flags & (SCOPE_MALLOC|SCOPE_CLONE)) == SCOPE_MALLOC)
-		RUBY_CRITICAL(free(vars));
-	}
-	break;
+            VALUE *vars = RANY(obj)->as.scope.local_vars-1;
+            if (!(RANY(obj)->as.scope.flags & SCOPE_CLONE) && vars[0] == 0)
+                RUBY_CRITICAL(free(RANY(obj)->as.scope.local_tbl));
+            if ((RANY(obj)->as.scope.flags & (SCOPE_MALLOC|SCOPE_CLONE)) == SCOPE_MALLOC)
+                RUBY_CRITICAL(free(vars));
+        }
+        break;
 
       case T_STRUCT:
-	if (RANY(obj)->as.rstruct.ptr) {
-	    RUBY_CRITICAL(free(RANY(obj)->as.rstruct.ptr));
-	}
-	break;
+        if (RANY(obj)->as.rstruct.ptr) {
+            RUBY_CRITICAL(free(RANY(obj)->as.rstruct.ptr));
+        }
+        break;
 
       default:
-	rb_bug("gc_sweep(): unknown data type 0x%lx(0x%lx)",
-	       RANY(obj)->as.basic.flags & T_MASK, obj);
+        rb_bug("gc_sweep(): unknown data type 0x%lx(0x%lx)",
+               RANY(obj)->as.basic.flags & T_MASK, obj);
     }
 
     return 0;
@@ -2448,7 +2384,10 @@ void
 rb_gc_mark_frame(frame)
     struct FRAME *frame;
 {
-    gc_mark((VALUE)frame->node);
+    rb_gc_mark((VALUE)frame->node);
+#ifdef GC_DEBUG
+    mark_source_pos(frame->source_pos);
+#endif
 }
 
 #ifdef __GNUC__
@@ -2459,27 +2398,27 @@ rb_gc_mark_frame(frame)
 typedef unsigned long rb_jmp_buf[8];
 __asm__ (".even\n\
 _rb_setjmp:\n\
-	move.l	4(sp),a0\n\
-	movem.l	d3-d7/a3-a5,(a0)\n\
-	moveq.l	#0,d0\n\
-	rts");
+        move.l  4(sp),a0\n\
+        movem.l d3-d7/a3-a5,(a0)\n\
+        moveq.l #0,d0\n\
+        rts");
 #else
 #if defined(DJGPP)
 typedef unsigned long rb_jmp_buf[6];
 __asm__ (".align 4\n\
 _rb_setjmp:\n\
-	pushl	%ebp\n\
-	movl	%esp,%ebp\n\
-	movl	8(%ebp),%ebp\n\
-	movl	%eax,(%ebp)\n\
-	movl	%ebx,4(%ebp)\n\
-	movl	%ecx,8(%ebp)\n\
-	movl	%edx,12(%ebp)\n\
-	movl	%esi,16(%ebp)\n\
-	movl	%edi,20(%ebp)\n\
-	popl	%ebp\n\
-	xorl	%eax,%eax\n\
-	ret");
+        pushl   %ebp\n\
+        movl    %esp,%ebp\n\
+        movl    8(%ebp),%ebp\n\
+        movl    %eax,(%ebp)\n\
+        movl    %ebx,4(%ebp)\n\
+        movl    %ecx,8(%ebp)\n\
+        movl    %edx,12(%ebp)\n\
+        movl    %esi,16(%ebp)\n\
+        movl    %edi,20(%ebp)\n\
+        popl    %ebp\n\
+        xorl    %eax,%eax\n\
+        ret");
 #endif
 #endif
 int rb_setjmp (rb_jmp_buf);
@@ -2529,10 +2468,10 @@ add_array_elements_to_remembered_set(x, n)
     VALUE v;
     while (n--) {
         v = *x;
-	if (is_pointer_to_heap((void *)v)) {
-	    rb_gc_write_barrier(v);
-	}
-	x++;
+        if (is_pointer_to_heap((void *)v)) {
+            rb_gc_write_barrier(v);
+        }
+        x++;
     }
 }
 
@@ -2543,147 +2482,147 @@ add_children_to_remembered_set(ptr)
     RVALUE *obj = RANY(ptr);
 
     if (FL_TEST(obj, FL_EXIVAR)) {
-	add_generic_ivar_to_remembered_set(ptr);
+        add_generic_ivar_to_remembered_set(ptr);
     }
 
     switch (obj->as.basic.flags & T_MASK) {
       case T_NIL:
       case T_FIXNUM:
-	rb_bug("add_children_to_remembered_set() called for broken object");
-	break;
+        rb_bug("add_children_to_remembered_set() called for broken object");
+        break;
 
       case T_NODE:
-	switch (nd_type(obj)) {
-	  case NODE_IF:		/* 1,2,3 */
-	  case NODE_FOR:
-	  case NODE_ITER:
-	  case NODE_CREF:
-	  case NODE_WHEN:
-	  case NODE_MASGN:
-	  case NODE_RESCUE:
-	  case NODE_RESBODY:
-	  case NODE_CLASS:
-	    rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
-	    /* fall through */
-	  case NODE_BLOCK:	/* 1,3 */
-	  case NODE_ARRAY:
-	  case NODE_DSTR:
-	  case NODE_DXSTR:
-	  case NODE_DREGX:
-	  case NODE_DREGX_ONCE:
-	  case NODE_FBODY:
-	  case NODE_ENSURE:
-	  case NODE_CALL:
-	  case NODE_DEFS:
-	  case NODE_OP_ASGN1:
-	    rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
-	    /* fall through */
-	  case NODE_SUPER:	/* 3 */
-	  case NODE_FCALL:
-	  case NODE_DEFN:
-	  case NODE_NEWLINE:
-	    rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
-	    break;
-
-	  case NODE_WHILE:	/* 1,2 */
-	  case NODE_UNTIL:
-	  case NODE_AND:
-	  case NODE_OR:
-	  case NODE_CASE:
-	  case NODE_SCLASS:
-	  case NODE_DOT2:
-	  case NODE_DOT3:
-	  case NODE_FLIP2:
-	  case NODE_FLIP3:
-	  case NODE_MATCH2:
-	  case NODE_MATCH3:
-	  case NODE_OP_ASGN_OR:
-	  case NODE_OP_ASGN_AND:
-	  case NODE_MODULE:
-	  case NODE_ALIAS:
-	  case NODE_VALIAS:
-	  case NODE_ARGS:
-	    rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
-	    /* fall through */
-	  case NODE_METHOD:	/* 2 */
-	  case NODE_NOT:
-	  case NODE_GASGN:
-	  case NODE_LASGN:
-	  case NODE_DASGN:
-	  case NODE_DASGN_CURR:
-	  case NODE_IASGN:
-	  case NODE_CVDECL:
-	  case NODE_CVASGN:
-	  case NODE_COLON3:
-	  case NODE_OPT_N:
-	  case NODE_EVSTR:
-	  case NODE_UNDEF:
-	    rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
-	    break;
-
-	  case NODE_HASH:	/* 1 */
-	  case NODE_LIT:
-	  case NODE_STR:
-	  case NODE_XSTR:
-	  case NODE_DEFINED:
-	  case NODE_MATCH:
-	  case NODE_RETURN:
-	  case NODE_BREAK:
-	  case NODE_NEXT:
-	  case NODE_YIELD:
-	  case NODE_COLON2:
-	  case NODE_SPLAT:
-	  case NODE_TO_ARY:
-	  case NODE_SVALUE:
-	    rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
-	    break;
-
-	  case NODE_SCOPE:	/* 2,3 */
-	  case NODE_BLOCK_PASS:
-	  case NODE_CDECL:
-	    rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
-	    rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
-	    break;
-
-	  case NODE_ZARRAY:	/* - */
-	  case NODE_ZSUPER:
-	  case NODE_CFUNC:
-	  case NODE_VCALL:
-	  case NODE_GVAR:
-	  case NODE_LVAR:
-	  case NODE_DVAR:
-	  case NODE_IVAR:
-	  case NODE_CVAR:
-	  case NODE_NTH_REF:
-	  case NODE_BACK_REF:
-	  case NODE_REDO:
-	  case NODE_RETRY:
-	  case NODE_SELF:
-	  case NODE_NIL:
-	  case NODE_TRUE:
-	  case NODE_FALSE:
-	  case NODE_ATTRSET:
-	  case NODE_BLOCK_ARG:
-	  case NODE_POSTEXE:
-	    break;
-	  case NODE_ALLOCA:
-	    add_array_elements_to_remembered_set((VALUE*)obj->as.node.u1.value,
-				 obj->as.node.u3.cnt);
+        switch (nd_type(obj)) {
+          case NODE_IF:         /* 1,2,3 */
+          case NODE_FOR:
+          case NODE_ITER:
+          case NODE_CREF:
+          case NODE_WHEN:
+          case NODE_MASGN:
+          case NODE_RESCUE:
+          case NODE_RESBODY:
+          case NODE_CLASS:
             rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
-	    break;
+            /* fall through */
+          case NODE_BLOCK:      /* 1,3 */
+          case NODE_ARRAY:
+          case NODE_DSTR:
+          case NODE_DXSTR:
+          case NODE_DREGX:
+          case NODE_DREGX_ONCE:
+          case NODE_FBODY:
+          case NODE_ENSURE:
+          case NODE_CALL:
+          case NODE_DEFS:
+          case NODE_OP_ASGN1:
+            rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+            /* fall through */
+          case NODE_SUPER:      /* 3 */
+          case NODE_FCALL:
+          case NODE_DEFN:
+          case NODE_NEWLINE:
+            rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
+            break;
 
-	  default:		/* unlisted NODE */
-	    if (is_pointer_to_heap(obj->as.node.u1.node)) {
-		rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
-	    }
-	    if (is_pointer_to_heap(obj->as.node.u2.node)) {
-		rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
-	    }
-	    if (is_pointer_to_heap(obj->as.node.u3.node)) {
-		rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
-	    }
-	}
-        return;	/* no need to mark class. */
+          case NODE_WHILE:      /* 1,2 */
+          case NODE_UNTIL:
+          case NODE_AND:
+          case NODE_OR:
+          case NODE_CASE:
+          case NODE_SCLASS:
+          case NODE_DOT2:
+          case NODE_DOT3:
+          case NODE_FLIP2:
+          case NODE_FLIP3:
+          case NODE_MATCH2:
+          case NODE_MATCH3:
+          case NODE_OP_ASGN_OR:
+          case NODE_OP_ASGN_AND:
+          case NODE_MODULE:
+          case NODE_ALIAS:
+          case NODE_VALIAS:
+          case NODE_ARGS:
+            rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+            /* fall through */
+          case NODE_METHOD:     /* 2 */
+          case NODE_NOT:
+          case NODE_GASGN:
+          case NODE_LASGN:
+          case NODE_DASGN:
+          case NODE_DASGN_CURR:
+          case NODE_IASGN:
+          case NODE_CVDECL:
+          case NODE_CVASGN:
+          case NODE_COLON3:
+          case NODE_OPT_N:
+          case NODE_EVSTR:
+          case NODE_UNDEF:
+            rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+            break;
+
+          case NODE_HASH:       /* 1 */
+          case NODE_LIT:
+          case NODE_STR:
+          case NODE_XSTR:
+          case NODE_DEFINED:
+          case NODE_MATCH:
+          case NODE_RETURN:
+          case NODE_BREAK:
+          case NODE_NEXT:
+          case NODE_YIELD:
+          case NODE_COLON2:
+          case NODE_SPLAT:
+          case NODE_TO_ARY:
+          case NODE_SVALUE:
+            rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+            break;
+
+          case NODE_SCOPE:      /* 2,3 */
+          case NODE_BLOCK_PASS:
+          case NODE_CDECL:
+            rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
+            rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+            break;
+
+          case NODE_ZARRAY:     /* - */
+          case NODE_ZSUPER:
+          case NODE_CFUNC:
+          case NODE_VCALL:
+          case NODE_GVAR:
+          case NODE_LVAR:
+          case NODE_DVAR:
+          case NODE_IVAR:
+          case NODE_CVAR:
+          case NODE_NTH_REF:
+          case NODE_BACK_REF:
+          case NODE_REDO:
+          case NODE_RETRY:
+          case NODE_SELF:
+          case NODE_NIL:
+          case NODE_TRUE:
+          case NODE_FALSE:
+          case NODE_ATTRSET:
+          case NODE_BLOCK_ARG:
+          case NODE_POSTEXE:
+            break;
+          case NODE_ALLOCA:
+            add_array_elements_to_remembered_set((VALUE*)obj->as.node.u1.value,
+                                 obj->as.node.u3.cnt);
+            rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+            break;
+
+          default:              /* unlisted NODE */
+            if (is_pointer_to_heap(obj->as.node.u1.node)) {
+                rb_gc_write_barrier((VALUE)obj->as.node.u1.node);
+            }
+            if (is_pointer_to_heap(obj->as.node.u2.node)) {
+                rb_gc_write_barrier((VALUE)obj->as.node.u2.node);
+            }
+            if (is_pointer_to_heap(obj->as.node.u3.node)) {
+                rb_gc_write_barrier((VALUE)obj->as.node.u3.node);
+            }
+        }
+        return; /* no need to mark class. */
     }
 
     rb_gc_write_barrier(obj->as.basic.klass);
@@ -2691,142 +2630,129 @@ add_children_to_remembered_set(ptr)
       case T_ICLASS:
       case T_CLASS:
       case T_MODULE:
-	add_table_to_remembered_set(obj->as.klass.m_tbl);
+        add_table_to_remembered_set(obj->as.klass.m_tbl);
         add_table_to_remembered_set(obj->as.klass.iv_tbl);
         rb_gc_write_barrier(obj->as.klass.super);
-	break;
+        break;
 
       case T_ARRAY:
-	if (FL_TEST(obj, ELTS_SHARED)) {
+        if (FL_TEST(obj, ELTS_SHARED)) {
             rb_gc_write_barrier(obj->as.array.aux.shared);
-	}
-	else {
-	    VALUE *ptr = obj->as.array.ptr;
+        }
+        else {
+            VALUE *ptr = obj->as.array.ptr;
             VALUE *pend = ptr + obj->as.array.len;
-	    while (ptr < pend) {
-		rb_gc_write_barrier(*ptr++);
-	    }
-	}
-	break;
+            while (ptr < pend) {
+                rb_gc_write_barrier(*ptr++);
+            }
+        }
+        break;
 
       case T_HASH:
-	add_hash_to_remembered_set(obj->as.hash.tbl);
-	rb_gc_write_barrier(obj->as.hash.ifnone);
-	break;
+        add_hash_to_remembered_set(obj->as.hash.tbl);
+        rb_gc_write_barrier(obj->as.hash.ifnone);
+        break;
 
       case T_STRING:
 #define STR_ASSOC FL_USER3   /* copied from string.c */
-	if (FL_TEST(obj, ELTS_SHARED|STR_ASSOC)) {
-	    rb_gc_write_barrier(obj->as.string.aux.shared);
-	}
-	break;
+        if (FL_TEST(obj, ELTS_SHARED|STR_ASSOC)) {
+            rb_gc_write_barrier(obj->as.string.aux.shared);
+        }
+        break;
 
       case T_DATA:
-	rb_bug("add_children_to_remembered_set() encountered T_DATA 0x%lx", obj);
-	break;
+        rb_bug("add_children_to_remembered_set() encountered T_DATA 0x%lx", obj);
+        break;
 
       case T_OBJECT:
-	add_table_to_remembered_set(obj->as.object.iv_tbl);
-	break;
+        add_table_to_remembered_set(obj->as.object.iv_tbl);
+        break;
 
       case T_FILE:
       case T_REGEXP:
       case T_FLOAT:
       case T_BIGNUM:
       case T_BLKTAG:
-	break;
+        break;
 
       case T_MATCH:
-	if (obj->as.match.str) {
-	    rb_gc_write_barrier(obj->as.match.str);
-	}
-	break;
+        if (obj->as.match.str) {
+            rb_gc_write_barrier(obj->as.match.str);
+        }
+        break;
 
       case T_VARMAP:
-	rb_gc_write_barrier(obj->as.varmap.val);
-	rb_gc_write_barrier((VALUE)obj->as.varmap.next);
-	break;
+        rb_gc_write_barrier(obj->as.varmap.val);
+        rb_gc_write_barrier((VALUE)obj->as.varmap.next);
+        break;
 
       case T_SCOPE:
-	if (obj->as.scope.local_vars && (obj->as.scope.flags & SCOPE_MALLOC)) {
-	    int n = obj->as.scope.local_tbl[0]+1;
-	    VALUE *vars = &obj->as.scope.local_vars[-1];
+        if (obj->as.scope.local_vars && (obj->as.scope.flags & SCOPE_MALLOC)) {
+            int n = obj->as.scope.local_tbl[0]+1;
+            VALUE *vars = &obj->as.scope.local_vars[-1];
 
-	    while (n--) {
-    	        rb_gc_write_barrier(*vars++);
-	    }
-	}
-	break;
+            while (n--) {
+                rb_gc_write_barrier(*vars++);
+            }
+        }
+        break;
 
       case T_STRUCT:
-	{
-	    VALUE *ptr = obj->as.rstruct.ptr;
+        {
+            VALUE *ptr = obj->as.rstruct.ptr;
             VALUE *pend = ptr + obj->as.rstruct.len;
             while (ptr < pend)
-	       rb_gc_write_barrier(*ptr++);
-	}
-	break;
+               rb_gc_write_barrier(*ptr++);
+        }
+        break;
 
       default:
-	rb_bug("add_children_to_remembered_set(): unknown data type 0x%lx(0x%lx) %s",
-	       obj->as.basic.flags & T_MASK, obj,
-	       is_pointer_to_heap(obj) ? "corrupted object" : "non object");
+        rb_bug("add_children_to_remembered_set(): unknown data type 0x%lx(0x%lx) %s",
+               obj->as.basic.flags & T_MASK, obj,
+               is_pointer_to_heap(obj) ? "corrupted object" : "non object");
     }
+}
+
+static void
+rb_gc_recycle_longlife_recent_allocations_set()
+{
+    longlife_recent_allocations_set_t *drem, *next;
+    int seen = 0;
+
+    if (longlife_recent_allocations_set_ptr) {
+        drem = longlife_recent_allocations_set_ptr;
+        while (drem) {
+            next = drem->next;
+            seen += 1;
+            if (drem->obj->as.basic.flags) {
+                add_children_to_remembered_set((VALUE)(drem->obj));
+            }
+            drem->obj = 0;
+            if (next == 0) {
+                drem->next = longlife_recent_allocations_set_freed;
+            }
+            drem = next;
+        }
+
+        longlife_recent_allocations += seen;
+        longlife_recent_allocations_set_freed = longlife_recent_allocations_set_ptr;
+        longlife_recent_allocations_set_ptr = 0;
+    }
+
+    GC_DEBUG_PRINTF("  Added %d new longlife allocations to remembered set\n", seen)
 }
 
 static void
 rb_gc_mark_remembered_set()
 {
-    remembered_set_t *rem;
-
-    if(longlife_allocation_since_last_gc) {
-        if(verbose_gc_stats) {
-	    fprintf(gc_data_file, "Re-marking remembered set\n");
-        }
-	--longlife_allocation_since_last_gc;
-	int i;
-        for (i = 0; i < heaps_used; i++) {
-            RVALUE *p, *pend;
-
-            if (heaps[i].lifetime == lifetime_longlife) {
-                p = heaps[i].slot; pend = p + heaps[i].limit;
-                for (;p < pend; p++) {
-	            if(p->as.basic.flags) {
-		        add_children_to_remembered_set(p);
-		    }
-                }
-            }
-        }
-	++remembered_set_recalculations;
-    }
-    else if(verbose_gc_stats) {
-        fprintf(gc_data_file, "Not re-marking remembered set\n");
-    }
-    rem = remembered_set_ptr;
+    remembered_set_t *rem = remembered_set_ptr;
     while (rem) {
         rb_gc_mark((VALUE)rem->obj);
         rem = rem->next;
     }
 }
 
-static void
-clear_mark_longlife_heaps()
-{
-    int i;
-
-    for (i = 0; i < heaps_used; i++) {
-        RVALUE *p, *pend;
-
-        if (heaps[i].lifetime == lifetime_longlife) {
-            p = heaps[i].slot; pend = p + heaps[i].limit;
-            struct heaps_slot* heap = heaps+i;
-            for (;p < pend; p++) {
-		rb_mark_table_heap_remove(heap, p);
-            }
-        }
-    }
-}
-
+#ifdef GC_DEBUG
 static GC_TIME_TYPE microseconds(struct timeval t) {
     return t.tv_sec * 1000000 + t.tv_usec;
 }
@@ -2835,111 +2761,111 @@ static GC_TIME_TYPE timediff_microseconds(struct timeval later, struct timeval e
     GC_TIME_TYPE diff = microseconds(later) - microseconds(earlier);
     return diff > 0 ? diff : 0;
 }
+#endif
 
 static void
 garbage_collect_0(VALUE *top_frame)
 {
     struct gc_list *list;
     struct FRAME * frame;
-    struct rusage ru1, ru2;
     SET_STACK_END;
 
 #ifdef HAVE_NATIVETHREAD
     if (!is_ruby_native_thread()) {
-	rb_bug("cross-thread violation on rb_gc()");
+        rb_bug("cross-thread violation on rb_gc()");
     }
 #endif
-    if (dont_gc || during_gc) {
-        add_heap_if_needed(&normal_heaps_space);
+    if (dont_gc || during_gc || ruby_in_compile) {
+        add_heap_if_needed(&eden_heaps_space);
+        GC_DEBUG_PRINTF("  Skipped due to reason: %s=1\n",
+            dont_gc ? "dont_gc" : (during_gc ? "during_gc" : "ruby_in_compile"))
         return;
     }
-    if (during_gc) return;
+
     during_gc++;
 
-    if (gc_statistics) {
-	gc_collections++;
-	getrusage(RUSAGE_SELF, &ru1);
-	if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "Garbage collection started\n");
-	}
+#ifdef GC_DEBUG
+    struct rusage ru1, ru2;
+
+    if (GC_DEBUG_ON) {
+        gc_eden_cycles_since_last_longlife++;
+        getrusage(RUSAGE_SELF, &ru1);
     }
+#endif
+
+    /*** Schedule optional longlife GC based on allocation rate ***/
+
+    if (longlife_recent_allocations > longlife_heaps_space.heap_slots_total * longlife_laziness) {
+        longlife_collection = Qtrue;
+    }
+
+    /* Add any new longlife allocations to the remembered set */
+    rb_gc_recycle_longlife_recent_allocations_set();
+
+    /*** Mark phase ***/
 
     gc_stack_limit = __stack_grow(STACK_END, GC_LEVEL_MAX);
     rb_mark_table_prepare();
     init_mark_stack();
 
-    ++gc_cycles_since_last_longlife_gc;
-    if(!longlife_collection && longlife_gc_after_gc_cycles < gc_cycles_since_last_longlife_gc) {
-	if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "Forcing longlife collection since %d GC cycles have passed without it (threshold %d)\n", gc_cycles_since_last_longlife_gc-1, longlife_gc_after_gc_cycles);
-	}
-	longlife_collection = Qtrue;
-	// Only extend the interval if we actually completed the previous interval
-	// without intermittent longlife GC caused by different trigger.
-        longlife_gc_after_gc_cycles *= LONGLIFE_CYCLE_DELAY_FACTOR;
-	// Never go over maximum specified cycles
-	if(longlife_gc_after_gc_cycles > longlife_max_delay) {
-	    longlife_gc_after_gc_cycles = longlife_max_delay;
-        }
-    }
+    rb_mark_table_reset(lifetime_eden);
     if (longlife_collection) {
-	gc_cycles_since_last_longlife_gc = 0;
-	if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "Garbage collecting longlife too\n");
-	}
-        clear_mark_longlife_heaps();
-    }
-    else {
+        rb_mark_table_reset(lifetime_longlife);
+    } else {
+        // Mark remembered references from longlife to eden
         rb_gc_mark_remembered_set();
     }
+
     /* mark frame stack */
-    if (rb_curr_thread == rb_main_thread)
-	frame = ruby_frame;
-    else
-	frame = rb_main_thread->frame;
-    for (; frame; frame = frame->prev) {
-	rb_gc_mark_frame(frame);
-	if (frame->tmp) {
-	    struct FRAME *tmp = frame->tmp;
-	    while (tmp) {
-		rb_gc_mark_frame(tmp);
-		tmp = tmp->prev;
-	    }
-	}
+    if (rb_curr_thread == rb_main_thread) {
+        frame = ruby_frame;
+    } else {
+        frame = rb_main_thread->frame;
+    } for (; frame; frame = frame->prev) {
+        rb_gc_mark_frame(frame);
+        if (frame->tmp) {
+            struct FRAME *tmp = frame->tmp;
+            while (tmp) {
+                rb_gc_mark_frame(tmp);
+                tmp = tmp->prev;
+            }
+        }
     }
 
     if (rb_curr_thread == rb_main_thread) {
-	gc_mark((VALUE)ruby_current_node);
-	gc_mark((VALUE)ruby_scope);
-	gc_mark((VALUE)ruby_dyna_vars);
+        rb_gc_mark((VALUE)ruby_current_node);
+        rb_gc_mark((VALUE)ruby_scope);
+        rb_gc_mark((VALUE)ruby_dyna_vars);
     } else {
-	gc_mark((VALUE)rb_main_thread->node);
-	gc_mark((VALUE)rb_main_thread->scope);
-	gc_mark((VALUE)rb_main_thread->dyna_vars);
+        rb_gc_mark((VALUE)rb_main_thread->node);
+        rb_gc_mark((VALUE)rb_main_thread->scope);
+        rb_gc_mark((VALUE)rb_main_thread->dyna_vars);
 
-	/* scan the current thread's stack */
-	rb_gc_mark_locations(top_frame, rb_curr_thread->stk_base);
+        /* scan the current thread's stack */
+        rb_gc_mark_locations(top_frame, rb_curr_thread->stk_base);
     }
 
     if (finalizer_table) {
-	mark_tbl(finalizer_table);
+        mark_tbl(finalizer_table);
     }
 
     /* If this is not the main thread, we need to scan the C stack, so
      * set top_frame to the end of the C stack.
      */
-    if (rb_curr_thread != rb_main_thread)
-	top_frame = rb_main_thread->stk_pos;
+    if (rb_curr_thread != rb_main_thread) {
+        top_frame = rb_main_thread->stk_pos;
+    }
 
 #if STACK_GROW_DIRECTION < 0
     rb_gc_mark_locations(top_frame, rb_gc_stack_start);
 #elif STACK_GROW_DIRECTION > 0
     rb_gc_mark_locations(rb_gc_stack_start, top_frame + 1);
 #else
-    if (rb_gc_stack_grow_direction < 0)
-	rb_gc_mark_locations(top_frame, rb_gc_stack_start);
-    else
-	rb_gc_mark_locations(rb_gc_stack_start, top_frame + 1);
+    if (rb_gc_stack_grow_direction < 0) {
+        rb_gc_mark_locations(top_frame, rb_gc_stack_start);
+    } else {
+        rb_gc_mark_locations(rb_gc_stack_start, top_frame + 1);
+    }
 #endif
 #ifdef __ia64
     /* mark backing store (flushed register window on the stack) */
@@ -2948,14 +2874,14 @@ garbage_collect_0(VALUE *top_frame)
 #endif
 #if defined(__human68k__) || defined(__mc68000__)
     rb_gc_mark_locations((VALUE*)((char*)STACK_END + 2),
-			 (VALUE*)((char*)rb_gc_stack_start + 2));
+                         (VALUE*)((char*)rb_gc_stack_start + 2));
 #endif
 
     rb_gc_mark_threads();
 
     /* mark protected global variables */
     for (list = global_List; list; list = list->next) {
-	rb_gc_mark_maybe(*list->varptr);
+        rb_gc_mark_maybe(*list->varptr);
     }
     rb_mark_end_proc();
     rb_gc_mark_global_tbl();
@@ -2970,21 +2896,23 @@ garbage_collect_0(VALUE *top_frame)
 
     /* gc_mark objects whose marking are not completed*/
     do {
-	while (!MARK_STACK_EMPTY) {
-	    if (mark_stack_overflow){
-		gc_mark_all();
-	    }
-	    else {
-		gc_mark_rest();
-	    }
-	}
-	rb_gc_abort_threads();
+        while (!MARK_STACK_EMPTY) {
+            if (mark_stack_overflow){
+                gc_mark_all();
+            }
+            else {
+                gc_mark_rest();
+            }
+        }
+        rb_gc_abort_threads();
     } while (!MARK_STACK_EMPTY);
+
+    /*** Sweep phase ***/
+
     if (longlife_collection) {
-        gc_sweep_for_longlife();
+        gc_sweep(&longlife_heaps_space);
     }
-    gc_sweep();
-    rb_mark_table_finalize();
+    gc_sweep(&eden_heaps_space);
 
     if (longlife_collection) {
       gc_longlife_cycles++;
@@ -2993,57 +2921,59 @@ garbage_collect_0(VALUE *top_frame)
       gc_cycles++;
     }
 
-    if (gc_statistics) {
-	GC_TIME_TYPE musecs_used_user;
-	GC_TIME_TYPE musecs_used_system;
-	GC_TIME_TYPE musecs_used;
-	getrusage(RUSAGE_SELF, &ru2);
-	musecs_used_user = timediff_microseconds(ru2.ru_utime, ru1.ru_utime);
-	musecs_used_system = timediff_microseconds(ru2.ru_stime, ru1.ru_stime);
-	musecs_used = musecs_used_user + musecs_used_system;
-	gc_time += musecs_used;
+#ifdef GC_DEBUG
+    if (GC_DEBUG_ON) {
+        GC_TIME_TYPE musecs_used_user;
+        GC_TIME_TYPE musecs_used_system;
+        GC_TIME_TYPE musecs_used;
+        getrusage(RUSAGE_SELF, &ru2);
+        musecs_used_user = timediff_microseconds(ru2.ru_utime, ru1.ru_utime);
+        musecs_used_system = timediff_microseconds(ru2.ru_stime, ru1.ru_stime);
+        musecs_used = musecs_used_user + musecs_used_system;
 
-	if (verbose_gc_stats) {
-	    fprintf(gc_data_file, "GC time: %d usec (user: %d, system: %d)\n", musecs_used, musecs_used_user, musecs_used_system);
-	}
+        fprintf(gc_data_file, "  Garbage collection finished: %llu usec (user: %llu, system: %llu)\n",
+            musecs_used, musecs_used_user, musecs_used_system);
     }
+#endif
 }
 
 static void
-garbage_collect()
+garbage_collect(const char* reason)
 {
-  jmp_buf save_regs_gc_mark;
-  VALUE *top;
-  FLUSH_REGISTER_WINDOWS;
-  /* This assumes that all registers are saved into the jmp_buf (and stack) */
-  rb_setjmp(save_regs_gc_mark);
-  top = __sp();
+    jmp_buf save_regs_gc_mark;
+    VALUE *top;
+    FLUSH_REGISTER_WINDOWS;
+    /* This assumes that all registers are saved into the jmp_buf (and stack) */
+    rb_setjmp(save_regs_gc_mark);
+    top = __sp();
+
+    GC_DEBUG_PRINTF("*** Garbage collection (%s) ***\n", reason)
 
 #if STACK_WIPE_SITES & 0x400
 # ifdef nativeAllocA
-  if ((!rb_main_thread || rb_curr_thread == rb_main_thread) && __stack_past (top, stack_limit)) {
-    /* allocate a large frame to ensure app stack cannot grow into GC stack */
-    (volatile void*) nativeAllocA(__stack_depth((void*)stack_limit,(void*)top));
-  }
-  garbage_collect_0(top);
+    if ((!rb_main_thread || rb_curr_thread == rb_main_thread) && __stack_past (top, stack_limit)) {
+        /* allocate a large frame to ensure app stack cannot grow into GC stack */
+        (volatile void*) nativeAllocA(__stack_depth((void*)stack_limit,(void*)top));
+    }
+    garbage_collect_0(top);
 # else /* no native alloca() available */
-  garbage_collect_0(top);
-  if (rb_curr_thread) {
-    VALUE *paddedLimit = __stack_grow(gc_stack_limit, GC_STACK_PAD);
-    if (__stack_past(rb_curr_thread->gc_stack_end, paddedLimit))
-      rb_curr_thread->gc_stack_end = paddedLimit;
-  }
-  rb_gc_wipe_stack();  /* wipe the whole stack area reserved for this gc */
+    garbage_collect_0(top);
+    if (rb_curr_thread) {
+        VALUE *paddedLimit = __stack_grow(gc_stack_limit, GC_STACK_PAD);
+        if (__stack_past(rb_curr_thread->gc_stack_end, paddedLimit))
+            rb_curr_thread->gc_stack_end = paddedLimit;
+    }
+    rb_gc_wipe_stack();  /* wipe the whole stack area reserved for this gc */
 # endif
 #else
-  garbage_collect_0(top);
+    garbage_collect_0(top);
 #endif
 }
 
 void
 rb_gc()
 {
-    garbage_collect();
+    garbage_collect("explicitly called");
     rb_gc_finalize_deferred();
 }
 
@@ -3060,9 +2990,7 @@ rb_gc()
 VALUE
 rb_gc_start()
 {
-    if (longlife_heaps_used) {
-        longlife_collection = Qtrue;
-    }
+    longlife_collection = Qtrue;
     rb_gc();
     return Qnil;
 }
@@ -3073,9 +3001,9 @@ rb_gc_is_thread_marked(the_thread)
     VALUE the_thread;
 {
     if (FL_ABLE(the_thread)) {
-	return rb_mark_table_contains((RVALUE *) the_thread);
+        return rb_mark_table_contains((RVALUE *) the_thread);
     } else {
-	return 0;
+        return 0;
     }
 }
 
@@ -3103,11 +3031,11 @@ set_stack_size(void)
         size_t space = maxStackBytes/5;
         if (space > 1024*1024) space = 1024*1024;
 #ifdef __FreeBSD__
-	/* For some reason we can't use more than 4 MB of stack on
- 	* FreeBSD even if getrlimit() reports a much higher amount.
- 	*/
-	if (maxStackBytes > 4 * 1024 * 1024)
-	    maxStackBytes = 4 * 1024 * 1024;
+        /* For some reason we can't use more than 4 MB of stack on
+        * FreeBSD even if getrlimit() reports a much higher amount.
+        */
+        if (maxStackBytes > 4 * 1024 * 1024)
+            maxStackBytes = 4 * 1024 * 1024;
 #endif
         ruby_set_stack_size(maxStackBytes - space);
         return;
@@ -3149,8 +3077,8 @@ Init_stack(addr)
     memset(&m, 0, sizeof(m));
     VirtualQuery(&m, &m, sizeof(m));
     rb_gc_stack_start =
-	STACK_UPPER((VALUE *)m.BaseAddress,
-		    (VALUE *)((char *)m.BaseAddress + m.RegionSize) - 1);
+        STACK_UPPER((VALUE *)m.BaseAddress,
+                    (VALUE *)((char *)m.BaseAddress + m.RegionSize) - 1);
 #elif defined(STACK_END_ADDRESS)
     {
         extern void *STACK_END_ADDRESS;
@@ -3160,10 +3088,10 @@ Init_stack(addr)
     if (!addr) addr = (void *)&addr;
     STACK_UPPER(addr, ++addr);
     if (rb_gc_stack_start) {
-	if (STACK_UPPER(rb_gc_stack_start > addr,
-			rb_gc_stack_start < addr))
-	    rb_gc_stack_start = addr;
-	return;
+        if (STACK_UPPER(rb_gc_stack_start > addr,
+                        rb_gc_stack_start < addr))
+            rb_gc_stack_start = addr;
+        return;
     }
     rb_gc_stack_start = addr;
 #endif
@@ -3191,26 +3119,24 @@ void ruby_init_stack(VALUE *addr
     set_stack_size();
 #elif defined _WIN32
     {
-	MEMORY_BASIC_INFORMATION mi;
-	DWORD size;
-	DWORD space;
+        MEMORY_BASIC_INFORMATION mi;
+        DWORD size;
+        DWORD space;
 
-	if (VirtualQuery(&mi, &mi, sizeof(mi))) {
-	    size = (char *)mi.BaseAddress - (char *)mi.AllocationBase;
-	    space = size / 5;
-	    if (space > 1024*1024) space = 1024*1024;
-	    ruby_set_stack_size(size - space);
-	}
+        if (VirtualQuery(&mi, &mi, sizeof(mi))) {
+            size = (char *)mi.BaseAddress - (char *)mi.AllocationBase;
+            space = size / 5;
+            if (space > 1024*1024) space = 1024*1024;
+            ruby_set_stack_size(size - space);
+        }
     }
 #endif
 }
 
 static void init_heaps_space(heaps_space_t* heaps_space, enum lifetime lifetime)
 {
+    heaps_space->heap_slots_total = 0;
     heaps_space->lifetime = lifetime;
-    if(heaps_space->heap_slots == 0) {
-	heaps_space->heap_slots = 10000;
-    }
 }
 /*
  * Document-class: ObjectSpace
@@ -3246,24 +3172,22 @@ static void init_heaps_space(heaps_space_t* heaps_space, enum lifetime lifetime)
 void
 Init_heap()
 {
-    rb_gc_init_debugging((VALUE) NULL);
-    rb_use_fast_mark_table();
+    int new_heap_size;
     rb_mark_table_init();
     if (!rb_gc_stack_start) {
-	Init_stack(0);
+        Init_stack(0);
     }
 
-    /*
-     * Need to set_gc_parameters() before heap initialization because
-     * of the following logic's dependence on longlife_disabled.
-     */
+    /* Need to set_gc_parameters() before heap initialization. */
     set_gc_parameters();
 
-    init_heaps_space(&normal_heaps_space, lifetime_normal);
-    if (longlife_disabled == Qfalse)
-        init_heaps_space(&longlife_heaps_space, lifetime_longlife);
+    init_heaps_space(&eden_heaps_space, lifetime_eden);
+    new_heap_size = add_heap(&eden_heaps_space);
+    GC_DEBUG_PRINTF("*** Eden heap added (initialization) (size %d) ***\n", new_heap_size)
 
-    add_heap(&normal_heaps_space);
+    init_heaps_space(&longlife_heaps_space, lifetime_longlife);
+    new_heap_size = add_heap(&longlife_heaps_space);
+    GC_DEBUG_PRINTF("*** Longlife heap added (initialization) (size %d) ***\n", new_heap_size)
 }
 
 static VALUE
@@ -3275,31 +3199,31 @@ os_obj_of(of)
     volatile VALUE v;
 
     for (i = 0; i < heaps_used; i++) {
-	RVALUE *p, *pend;
+        RVALUE *p, *pend;
 
-	p = heaps[i].slot; pend = p + heaps[i].limit;
-	for (;p < pend; p++) {
-	    if (p->as.basic.flags) {
-		switch (BUILTIN_TYPE(p)) {
-		  case T_NONE:
-		  case T_ICLASS:
-		  case T_VARMAP:
-		  case T_SCOPE:
-		  case T_NODE:
-		  case T_DEFERRED:
-		    continue;
-		  case T_CLASS:
-		    if (FL_TEST(p, FL_SINGLETON)) continue;
-		  default:
-		    if (!p->as.basic.klass) continue;
+        p = heaps[i].slot; pend = p + heaps[i].limit;
+        for (;p < pend; p++) {
+            if (p->as.basic.flags) {
+                switch (BUILTIN_TYPE(p)) {
+                  case T_NONE:
+                  case T_ICLASS:
+                  case T_VARMAP:
+                  case T_SCOPE:
+                  case T_NODE:
+                  case T_DEFERRED:
+                    continue;
+                  case T_CLASS:
+                    if (FL_TEST(p, FL_SINGLETON)) continue;
+                  default:
+                    if (!p->as.basic.klass) continue;
                     v = (VALUE)p;
-		    if (!of || rb_obj_is_kind_of(v, of)) {
-			rb_yield(v);
-			n++;
-		    }
-		}
-	    }
-	}
+                    if (!of || rb_obj_is_kind_of(v, of)) {
+                        rb_yield(v);
+                        n++;
+                    }
+                }
+            }
+        }
     }
 
     return INT2FIX(n);
@@ -3348,10 +3272,10 @@ os_each_obj(argc, argv, os)
 
     rb_secure(4);
     if (argc == 0) {
-	of = 0;
+        of = 0;
     }
     else {
-	rb_scan_args(argc, argv, "01", &of);
+        rb_scan_args(argc, argv, "01", &of);
     }
     RETURN_ENUMERATOR(os, 1, &of);
     return os_obj_of(of);
@@ -3368,8 +3292,8 @@ add_final(os, block)
 {
     rb_warn("ObjectSpace::add_finalizer is deprecated; use define_finalizer");
     if (!rb_respond_to(block, rb_intern("call"))) {
-	rb_raise(rb_eArgError, "wrong type argument %s (should be callable)",
-		 rb_obj_classname(block));
+        rb_raise(rb_eArgError, "wrong type argument %s (should be callable)",
+                 rb_obj_classname(block));
     }
     rb_ary_push(finalizers, block);
     return block;
@@ -3424,7 +3348,7 @@ undefine_final(os, obj)
     VALUE os, obj;
 {
     if (finalizer_table) {
-	st_delete(finalizer_table, (st_data_t*)&obj, 0);
+        st_delete(finalizer_table, (st_data_t*)&obj, 0);
     }
     return obj;
 }
@@ -3448,16 +3372,16 @@ define_final(argc, argv, os)
 
     rb_scan_args(argc, argv, "11", &obj, &block);
     if (argc == 1) {
-	block = rb_block_proc();
+        block = rb_block_proc();
     }
     else if (!rb_respond_to(block, rb_intern("call"))) {
-	rb_raise(rb_eArgError, "wrong type argument %s (should be callable)",
-		 rb_obj_classname(block));
+        rb_raise(rb_eArgError, "wrong type argument %s (should be callable)",
+                 rb_obj_classname(block));
     }
     need_call_final = 1;
     if (!FL_ABLE(obj)) {
-	rb_raise(rb_eArgError, "cannot define finalizer for %s",
-		 rb_obj_classname(obj));
+        rb_raise(rb_eArgError, "cannot define finalizer for %s",
+                 rb_obj_classname(obj));
     }
     RBASIC(obj)->flags |= FL_FINALIZE;
 
@@ -3465,15 +3389,15 @@ define_final(argc, argv, os)
     OBJ_FREEZE(block);
 
     if (!finalizer_table) {
-	finalizer_table = st_init_numtable();
+        finalizer_table = st_init_numtable();
     }
     if (st_lookup(finalizer_table, obj, &table)) {
-	rb_ary_push(table, block);
+        rb_ary_push(table, block);
     }
     else {
-	table = rb_ary_new3(1, block);
-	RBASIC(table)->klass = 0;
-	st_add_direct(finalizer_table, obj, table);
+        table = rb_ary_new3(1, block);
+        RBASIC(table)->klass = 0;
+        st_add_direct(finalizer_table, obj, table);
     }
     return block;
 }
@@ -3487,7 +3411,7 @@ rb_gc_copy_finalizer(dest, obj)
     if (!finalizer_table) return;
     if (!FL_TEST(obj, FL_FINALIZE)) return;
     if (st_lookup(finalizer_table, obj, &table)) {
-	st_insert(finalizer_table, dest, table);
+        st_insert(finalizer_table, dest, table);
     }
     RBASIC(dest)->flags |= FL_FINALIZE;
 }
@@ -3508,27 +3432,27 @@ run_final(obj)
     int status, critical_save = rb_thread_critical;
     VALUE args[3], table, objid;
 
-    objid = rb_obj_id(obj);	/* make obj into id */
+    objid = rb_obj_id(obj);     /* make obj into id */
     RBASIC(obj)->klass = 0;
     rb_thread_critical = Qtrue;
     if (BUILTIN_TYPE(obj) == T_DEFERRED && RDATA(obj)->dfree) {
-	(*RDATA(obj)->dfree)(DATA_PTR(obj));
+        (*RDATA(obj)->dfree)(DATA_PTR(obj));
     }
     args[1] = 0;
     args[2] = (VALUE)ruby_safe_level;
     for (i=0; i<RARRAY(finalizers)->len; i++) {
-	args[0] = RARRAY(finalizers)->ptr[i];
-	if (!args[1]) args[1] = rb_ary_new3(1, objid);
-	rb_protect((VALUE(*)_((VALUE)))run_single_final, (VALUE)args, &status);
+        args[0] = RARRAY(finalizers)->ptr[i];
+        if (!args[1]) args[1] = rb_ary_new3(1, objid);
+        rb_protect((VALUE(*)_((VALUE)))run_single_final, (VALUE)args, &status);
     }
     if (finalizer_table && st_delete(finalizer_table, (st_data_t*)&obj, &table)) {
-	for (i=0; i<RARRAY(table)->len; i++) {
-	    VALUE final = RARRAY(table)->ptr[i];
-	    args[0] = RARRAY(final)->ptr[1];
-	    if (!args[1]) args[1] = rb_ary_new3(1, objid);
-	    args[2] = FIX2INT(RARRAY(final)->ptr[0]);
-	    rb_protect((VALUE(*)_((VALUE)))run_single_final, (VALUE)args, &status);
-	}
+        for (i=0; i<RARRAY(table)->len; i++) {
+            VALUE final = RARRAY(table)->ptr[i];
+            args[0] = RARRAY(final)->ptr[1];
+            if (!args[1]) args[1] = rb_ary_new3(1, objid);
+            args[2] = FIX2INT(RARRAY(final)->ptr[0]);
+            rb_protect((VALUE(*)_((VALUE)))run_single_final, (VALUE)args, &status);
+        }
     }
     rb_thread_critical = critical_save;
 }
@@ -3540,8 +3464,8 @@ rb_gc_finalize_deferred()
 
     deferred_final_list = 0;
     if (p) {
-	finalize_list(p);
-	free_unused_heaps();
+        finalize_list(p);
+        free_unused_heaps();
     }
 }
 
@@ -3550,53 +3474,55 @@ rb_gc_call_finalizer_at_exit()
 {
     RVALUE *p, *pend;
     struct heaps_slot *heap;
-    int i;
+    int i, finalized_slots = 0;
 
     /* run finalizers */
     if (need_call_final && finalizer_table) {
-	p = deferred_final_list;
-	deferred_final_list = 0;
-	finalize_list(p);
-	for (i = 0; i < heaps_used; i++) {
-	    p = heaps[i].slot; pend = p + heaps[i].limit;
-	    while (p < pend) {
-		if (FL_TEST(p, FL_FINALIZE)) {
-		    FL_UNSET(p, FL_FINALIZE);
-		    run_final((VALUE)p);
-		}
-		p++;
-	    }
-	}
-	if (finalizer_table) {
-	    st_free_table(finalizer_table);
-	    finalizer_table = 0;
-	}
+        GC_DEBUG_PRINT("*** Calling finalizers ***\n")
+        p = deferred_final_list;
+        deferred_final_list = 0;
+        finalize_list(p);
+        for (i = 0; i < heaps_used; i++) {
+            heap = &heaps[i];
+            p = heaps->slot; pend = p + heaps->limit;
+            while (p < pend) {
+                if (FL_TEST(p, FL_FINALIZE)) {
+                    if (GC_DEBUG_ON) finalized_slots++;
+                    FL_UNSET(p, FL_FINALIZE);
+                    run_final((VALUE)p);
+                }
+                p++;
+            }
+        }
+        if (finalizer_table) {
+            st_free_table(finalizer_table);
+            finalizer_table = 0;
+        }
     }
     /* run data object's finalizers */
     for (i = 0; i < heaps_used; i++) {
-	heap = &heaps[i];
-	p = heap->slot; pend = p + heap->limit;
-	while (p < pend) {
-	    if (BUILTIN_TYPE(p) == T_DATA &&
-		DATA_PTR(p) && RANY(p)->as.data.dfree &&
-		RANY(p)->as.basic.klass != rb_cThread) {
-		p->as.free.flags = 0;
-		rb_mark_table_heap_remove(heap, p);
-		if ((long)RANY(p)->as.data.dfree == -1) {
-		    RUBY_CRITICAL(free(DATA_PTR(p)));
-		}
-		else if (RANY(p)->as.data.dfree) {
-		    (*RANY(p)->as.data.dfree)(DATA_PTR(p));
-		}
-	    }
-	    else if (BUILTIN_TYPE(p) == T_FILE) {
-		p->as.free.flags = 0;
-		rb_mark_table_heap_remove(heap, p);
-		rb_io_fptr_finalize(RANY(p)->as.file.fptr);
-	    }
-	    p++;
-	}
+        heap = &heaps[i];
+        p = heap->slot; pend = p + heap->limit;
+        while (p < pend) {
+            if (BUILTIN_TYPE(p) == T_DATA &&
+                DATA_PTR(p) && RANY(p)->as.data.dfree &&
+                RANY(p)->as.basic.klass != rb_cThread) {
+                p->as.free.flags = 0;
+                if ((long)RANY(p)->as.data.dfree == -1) {
+                    RUBY_CRITICAL(free(DATA_PTR(p)));
+                } else if (RANY(p)->as.data.dfree) {
+                    if (GC_DEBUG_ON) finalized_slots++;
+                    (*RANY(p)->as.data.dfree)(DATA_PTR(p));
+                }
+            } else if (BUILTIN_TYPE(p) == T_FILE) {
+                p->as.free.flags = 0;
+                if (GC_DEBUG_ON) finalized_slots++;
+                rb_io_fptr_finalize(RANY(p)->as.file.fptr);
+            }
+            p++;
+        }
     }
+    GC_DEBUG_PRINTF("  Finalized %d objects\n", finalized_slots)
 }
 
 /*
@@ -3625,7 +3551,7 @@ id2ref(obj, objid)
     if (ptr == Qfalse) return Qfalse;
     if (ptr == Qnil) return Qnil;
     if (FIXNUM_P(ptr)) return (VALUE)ptr;
-    ptr = objid ^ FIXNUM_FLAG;	/* unset FIXNUM_FLAG */
+    ptr = objid ^ FIXNUM_FLAG;  /* unset FIXNUM_FLAG */
 
     if ((ptr % sizeof(RVALUE)) == (4 << 2)) {
         ID symid = ptr / sizeof(RVALUE);
@@ -3635,11 +3561,11 @@ id2ref(obj, objid)
     }
 
     if (!is_pointer_to_heap((void *)ptr)||
-	(type = BUILTIN_TYPE(ptr)) > T_SYMBOL || type == T_ICLASS) {
-	rb_raise(rb_eRangeError, "0x%lx is not id value", p0);
+        (type = BUILTIN_TYPE(ptr)) > T_SYMBOL || type == T_ICLASS) {
+        rb_raise(rb_eRangeError, "0x%lx is not id value", p0);
     }
     if (BUILTIN_TYPE(ptr) == 0 || RBASIC(ptr)->klass == 0) {
-	rb_raise(rb_eRangeError, "0x%lx is recycled object", p0);
+        rb_raise(rb_eRangeError, "0x%lx is recycled object", p0);
     }
     return (VALUE)ptr;
 }
@@ -3711,245 +3637,6 @@ rb_obj_id(VALUE obj)
     return (VALUE)((long)obj|FIXNUM_FLAG);
 }
 
-static VALUE
-os_statistics_work(lifetime_t lt)
-{
-    int i, heap_count = 0;
-    unsigned int objects = 0;
-    unsigned int total_objects_size = 0;
-    unsigned int total_heap_size = 0;
-    unsigned int total_heap_slots = 0;
-    unsigned int slots_in_first_heap = 0;
-    unsigned int slots_in_last_heap = 0;
-    unsigned int ast_nodes = 0;
-    unsigned int ast_class = 0, ast_varmap = 0, ast_scope = 0, ast_node = 0, ast_singleton = 0;
-    char message[1024];
-    unsigned int total_leading_free_slots = 0;
-    unsigned int total_trailing_free_slots = 0;
-    const unsigned int group_size = 16;
-    unsigned int contiguous_free_groups = 0;
-    unsigned int terminal_objects = 0; /* Number of objects that cannot possibly refer to other objects. */
-
-    for (i = 0; i < heaps_used; i++) {
-	RVALUE *p, *pend;
-	unsigned int leading_free_slots = 0;
-	unsigned int trailing_free_slots = 0;
-	unsigned int slot_index = 0;
-	unsigned int free_slots_in_current_group = 0;
-	enum { BEGIN, MIDDLE, END } mode = BEGIN;
-
-        if (heaps[i].lifetime != lt) continue;
-
-        heap_count++;
-	p = heaps[i].slot;
-	pend = p + heaps[i].limit;
-	for (;p < pend; p++, slot_index++) {
-	    switch (mode) {
-	    case BEGIN:
-		if (p->as.basic.flags) {
-		    mode = MIDDLE;
-		} else {
-		    leading_free_slots++;
-		}
-		break;
-	    case MIDDLE:
-		if (p->as.basic.flags == 0) {
-		    mode = END;
-		    trailing_free_slots++;
-		}
-		break;
-	    case END:
-		if (p->as.basic.flags == 0) {
-		    trailing_free_slots++;
-		} else {
-		    trailing_free_slots = 0;
-		    mode = MIDDLE;
-		}
-		break;
-	    };
-
-	    if (slot_index % group_size == 0) {
-		if (free_slots_in_current_group == group_size) {
-		    contiguous_free_groups++;
-		}
-		free_slots_in_current_group = 0;
-	    }
-	    if (p->as.basic.flags == 0) {
-		free_slots_in_current_group++;
-	    }
-
-	    if (p->as.basic.flags) {
-		int isAST = 0;
-		switch (TYPE(p)) {
-		  case T_ICLASS:
-                    ast_class++;
-		  case T_VARMAP:
-                    ast_varmap++;
-		  case T_SCOPE:
-                    ast_scope++;
-		  case T_NODE:
-                    ast_node++;
-		    isAST = 1;
-		    break;
-		  case T_CLASS:
-		    if (FL_TEST(p, FL_SINGLETON)) {
-                        ast_singleton++;
-		        isAST = 1;
-		        break;
-		    }
-		  case T_FILE:
-		  case T_REGEXP:
-		  case T_FLOAT:
-		  case T_BIGNUM:
-		  case T_BLKTAG:
-		    terminal_objects++;
-		    break;
-		  default:
-		    break;
-		}
-		objects++;
-		if (isAST) {
-		   ast_nodes++;
-		}
-	    }
-	}
-	unsigned int heap_size = (void *) pend - heaps[i].membase;
-	unsigned int heap_slots = heap_size/sizeof(RVALUE);
-	if(slots_in_first_heap == 0) {
-	    slots_in_first_heap = heap_slots;
-	}
-	slots_in_last_heap = heap_slots;
-	total_heap_size += heap_size;
-	total_leading_free_slots += leading_free_slots;
-	total_trailing_free_slots += trailing_free_slots;
-    }
-
-    total_objects_size = objects * sizeof(RVALUE);
-    total_heap_slots = total_heap_size / sizeof(RVALUE);
-    snprintf(message, sizeof(message),
-        "** %s **\n"
-        "Number of objects    : %d (%d AST nodes, %.2f%%)\n"
-        "AST types            : class %d, varmap %d, scope %d, node %d, singleton %d\n"
-        "Heap slot size       : %d\n"
-        "Slots in first heap  : %d\n"
-        "Slots in last heap   : %d\n"
-        "GC cycles so far     : %d\n"
-        "Remembered set recalc: %d\n"
-        "Number of heaps      : %d\n"
-        "Total size of objects: %.2f KB\n"
-        "Total size of heaps  : %.2f KB (%.2f KB = %.2f%% unused)\n"
-        "Leading free slots   : %d (%.2f KB = %.2f%%)\n"
-        "Trailing free slots  : %d (%.2f KB = %.2f%%)\n"
-        "Number of contiguous groups of %d slots: %d (%.2f%%)\n"
-        "Number of terminal objects: %d (%.2f%%)\n",
-        lifetime_name[lt],
-        objects, ast_nodes, ast_nodes * 100 / (double) objects,
-        ast_class, ast_varmap, ast_scope, ast_node, ast_singleton,
-        sizeof(RVALUE),
-        slots_in_first_heap,
-        slots_in_last_heap,
-        (lt == lifetime_normal) ? gc_cycles : gc_longlife_cycles,
-        remembered_set_recalculations,
-        heap_count,
-        total_objects_size / 1024.0,
-        total_heap_size / 1024.0,
-        (total_heap_size - total_objects_size) / 1024.0,
-        (total_heap_size - total_objects_size) * 100.0 / total_heap_size,
-        total_leading_free_slots,
-        total_leading_free_slots * sizeof(RVALUE) / 1024.0,
-        total_leading_free_slots * 100.0 / total_heap_slots,
-        total_trailing_free_slots,
-        total_trailing_free_slots * sizeof(RVALUE) / 1024.0,
-        total_trailing_free_slots * 100.0 / total_heap_slots,
-        group_size,
-        contiguous_free_groups,
-        (contiguous_free_groups * group_size * 100.0) / total_heap_slots,
-        terminal_objects,
-        terminal_objects * 100.0 / total_heap_slots
-    );
-    return rb_str_new2(message);
-}
-
-static VALUE
-os_statistics()
-{
-    return os_statistics_work(lifetime_normal);
-}
-
-static VALUE
-os_longlife_statistics()
-{
-    return os_statistics_work(lifetime_longlife);
-}
-
-/*
- *  call-seq:
- *     GC.copy_on_write_friendly?     => true or false
- *
- *  Returns whether the garbage collector is copy-on-write friendly.
- *
- *  This method only has meaning on platforms that support the _fork_ system call.
- *  Please consult the documentation for GC.copy_on_write_friendly= for additional
- *  notes.
- */
-static VALUE
-rb_gc_copy_on_write_friendly()
-{
-    if (rb_mark_table_init == rb_fast_mark_table_init) {
-	return Qfalse;
-    } else {
-	return Qtrue;
-    }
-}
-
-/*
- *  call-seq:
- *     GC.copy_on_write_friendly = _boolean_
- *
- *  Tell the garbage collector whether to be copy-on-write friendly.
- *
- *  Note that this is an implementation detail of the garbage collector. On some Ruby
- *  implementations, the garbage collector may always be copy-on-write friendly. In that
- *  case, this method will do nothing. Furthermore, copy-on-write friendliness has no
- *  meaning on some platforms (such as Microsoft Windows), so setting this flag on those
- *  platform is futile.
- *
- *  Please keep in mind that this flag is only advisory. Do not rely on it for anything
- *  truly important.
- *
- *  In the mainline Ruby implementation, the copy-on-write friendly garbage collector is
- *  slightly slower the non-copy-on-write friendly version.
- */
-static VALUE
-rb_gc_set_copy_on_write_friendly(VALUE self, VALUE val)
-{
-    if (RTEST(val)) {
-	rb_use_bf_mark_table();
-    } else {
-	rb_use_fast_mark_table();
-    }
-    rb_mark_table_init();
-    return Qnil;
-}
-
-/* call-seq:
- *  ObjectSpace.live_objects => number
- *
- * Returns the count of objects currently allocated in the system. This goes
- * down after the garbage collector runs.
- */
-static
-VALUE os_live_objects(VALUE self)
-{ return ULONG2NUM(live_objects); }
-
-static
-VALUE os_max_live_objects(VALUE self)
-{ return ULONG2NUM(max_live_objects); }
-
-static
-VALUE os_longlife_max_live_objects(VALUE self)
-{ return ULONG2NUM(longlife_max_live_objects); }
-
 /* call-seq:
  *  ObjectSpace.allocated_objects => number
  *
@@ -3958,7 +3645,7 @@ VALUE os_longlife_max_live_objects(VALUE self)
  * currently allocated, use ObjectSpace::live_objects
  */
 static
-VALUE os_allocated_objects(VALUE self)
+VALUE rb_allocated_objects(VALUE self)
 {
 #if defined(HAVE_LONG_LONG)
     return ULL2NUM(allocated_objects);
@@ -3966,8 +3653,6 @@ VALUE os_allocated_objects(VALUE self)
     return ULONG2NUM(allocated_objects);
 #endif
 }
-
-
 
 /*
  *  The <code>GC</code> module provides an interface to Ruby's mark and
@@ -3984,29 +3669,7 @@ Init_GC()
     rb_define_singleton_method(rb_mGC, "start", rb_gc_start, 0);
     rb_define_singleton_method(rb_mGC, "enable", rb_gc_enable, 0);
     rb_define_singleton_method(rb_mGC, "disable", rb_gc_disable, 0);
-#ifdef MBARI_API
-    rb_define_singleton_method(rb_mGC, "limit", gc_getlimit, 0);
-    rb_define_singleton_method(rb_mGC, "limit=", gc_setlimit, 1);
-    rb_define_singleton_method(rb_mGC, "growth", gc_growth, 0);
-    rb_define_singleton_method(rb_mGC, "exorcise", gc_exorcise, 0);
-#endif
     rb_define_method(rb_mGC, "garbage_collect", rb_gc_start, 0);
-    rb_define_singleton_method(rb_mGC, "initialize_debugging", rb_gc_init_debugging, 0);
-    rb_define_singleton_method(rb_mGC, "copy_on_write_friendly?", rb_gc_copy_on_write_friendly, 0);
-    rb_define_singleton_method(rb_mGC, "copy_on_write_friendly=", rb_gc_set_copy_on_write_friendly, 1);
-
-    rb_define_singleton_method(rb_mGC, "enable_stats", rb_gc_enable_stats, 0);
-    rb_define_singleton_method(rb_mGC, "disable_stats", rb_gc_disable_stats, 0);
-    rb_define_singleton_method(rb_mGC, "clear_stats", rb_gc_clear_stats, 0);
-    rb_define_singleton_method(rb_mGC, "allocated_size", rb_gc_allocated_size, 0);
-    rb_define_singleton_method(rb_mGC, "num_allocations", rb_gc_num_allocations, 0);
-    rb_define_singleton_method(rb_mGC, "collections", rb_gc_collections, 0);
-    rb_define_singleton_method(rb_mGC, "time", rb_gc_time, 0);
-    rb_define_singleton_method(rb_mGC, "dump", rb_gc_dump, 0);
-    rb_define_singleton_method(rb_mGC, "log", rb_gc_log, 1);
-
-    rb_define_singleton_method(rb_mGC, "disable_longlife", rb_temp_disable_longlife, 0);
-    rb_define_singleton_method(rb_mGC, "enable_longlife", rb_temp_enable_longlife, 0);
 
     rb_mObSpace = rb_define_module("ObjectSpace");
     rb_define_module_function(rb_mObSpace, "each_object", os_each_obj, -1);
@@ -4015,29 +3678,28 @@ Init_GC()
     rb_define_module_function(rb_mObSpace, "remove_finalizer", rm_final, 1);
     rb_define_module_function(rb_mObSpace, "finalizers", finals, 0);
     rb_define_module_function(rb_mObSpace, "call_finalizer", call_final, 1);
-    rb_define_module_function(rb_mObSpace, "live_objects", os_live_objects, 0);
-    rb_define_module_function(rb_mObSpace, "max_live_objects", os_max_live_objects, 0);
-    rb_define_module_function(rb_mObSpace, "longlife_max_live_objects", os_longlife_max_live_objects, 0);
-    rb_define_module_function(rb_mObSpace, "allocated_objects", os_allocated_objects, 0);
+    rb_define_module_function(rb_mObSpace, "allocated_objects", rb_allocated_objects, 0);
 
     rb_define_module_function(rb_mObSpace, "define_finalizer", define_final, -1);
     rb_define_module_function(rb_mObSpace, "undefine_finalizer", undefine_final, 1);
 
     rb_define_module_function(rb_mObSpace, "_id2ref", id2ref, 1);
 
-    rb_define_module_function(rb_mObSpace, "statistics", os_statistics, 0);
-    rb_define_module_function(rb_mObSpace, "longlife_statistics", os_longlife_statistics, 0);
+#ifdef GC_DEBUG
+    rb_define_singleton_method(rb_mGC, "exorcise", gc_exorcise, 0);
+    rb_define_singleton_method(rb_mGC, "stress", gc_debug_stress_get, 0);
+    rb_define_singleton_method(rb_mGC, "stress=", gc_debug_stress_set, 1);
+    rb_define_singleton_method(rb_mGC, "log", rb_gc_log, 1);
+#endif
 
     rb_gc_register_address(&rb_mObSpace);
     rb_global_variable(&finalizers);
     rb_gc_unregister_address(&rb_mObSpace);
     finalizers = rb_ary_new();
 
-    source_filenames = st_init_strtable();
-
     rb_global_variable(&nomem_error);
     nomem_error = rb_exc_new3(rb_eNoMemError,
-			      rb_obj_freeze(rb_str_new2("failed to allocate memory")));
+                              rb_obj_freeze(rb_str_new2("failed to allocate memory")));
     OBJ_TAINT(nomem_error);
     OBJ_FREEZE(nomem_error);
 

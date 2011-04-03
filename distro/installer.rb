@@ -18,7 +18,7 @@ class Installer
 		Dependencies::OpenSSL_Dev,
 		Dependencies::Readline_Dev
 	]
-	
+
 	def start(options = {})
 		Dir.chdir(ROOT)
 		@version = File.read("version.txt")
@@ -30,15 +30,15 @@ class Installer
 		if !options[:extra_configure_args].empty?
 			@extra_configure_args = options[:extra_configure_args].join(" ")
 		end
-		
+
 		if RUBY_PLATFORM =~ /darwin/
 			ENV['PATH'] = "#{ENV['PATH']}:/usr/local/mysql/bin"
 		end
-		
+
 		show_welcome_screen
 		check_dependencies || exit(1)
 		ask_installation_prefix
-		
+
 		steps = []
 		if tcmalloc_supported?
 			steps += [
@@ -87,7 +87,7 @@ private
 		color_puts "<b>Press Enter to continue, or Ctrl-C to abort.</b>"
 		wait
 	end
-	
+
 	def check_dependencies
 		missing_dependencies = []
 		color_puts "<banner>Checking for required software...</banner>"
@@ -106,7 +106,7 @@ private
 				missing_dependencies << dep
 			end
 		end
-		
+
 		if missing_dependencies.empty?
 			return true
 		else
@@ -115,7 +115,7 @@ private
 			color_puts "But don't worry, this installer will tell you how to install them.\n"
 			color_puts "<b>Press Enter to continue, or Ctrl-C to abort.</b>"
 			wait
-			
+
 			line
 			color_puts "<banner>Installation instructions for required software</banner>"
 			puts
@@ -126,7 +126,7 @@ private
 			return false
 		end
 	end
-	
+
 	def print_dependency_installation_instructions(dep)
 		color_puts " * To install <yellow>#{dep.name}</yellow>:"
 		if !dep.install_command.nil?
@@ -142,7 +142,7 @@ private
 			color_puts "   Search Google."
 		end
 	end
-	
+
 	def strip_trailing_slashes(data)
 		if data.nil?
 			return nil
@@ -155,7 +155,7 @@ private
 			end
 		end
 	end
-	
+
 	def ask_installation_prefix
 		line
 		color_puts "<banner>Target directory</banner>"
@@ -175,30 +175,30 @@ private
 		File.open("source/.prefix.txt", "w") do |f|
 			f.write(@prefix)
 		end
-		
+
 		if @destdir && !@destdir =~ /\/$/
 			@destdir += "/"
 		end
-		
+
 		ENV['CPATH'] = "#{@destdir}#{@prefix}/include:/usr/include:/usr/local/include:#{ENV['CPATH']}"
 		ENV['LD_LIBRARY_PATH'] = "#{@destdir}#{@prefix}/lib:#{ENV['LD_LIBRARY_PATH']}"
 		ENV['DYLD_LIBRARY_PATH'] = "#{@destdir}#{@prefix}/lib:#{ENV['DYLD_LIBRARY_PATH']}"
 	end
-	
+
 	def configure_tcmalloc
-		return configure_autoconf_package('source/distro/google-perftools-1.4',
+		return configure_autoconf_package('source/distro/google-perftools-1.7',
 			'the memory allocator for Ruby Enterprise Edition',
 			'--disable-dependency-tracking')
 	end
-	
+
 	def compile_tcmalloc
-		Dir.chdir('source/distro/google-perftools-1.4') do
+		Dir.chdir('source/distro/google-perftools-1.7') do
 			return sh("make libtcmalloc_minimal.la")
 		end
 	end
-	
+
 	def install_tcmalloc
-		return install_autoconf_package('source/distro/google-perftools-1.4',
+		return install_autoconf_package('source/distro/google-perftools-1.7',
 		  'the memory allocator for Ruby Enterprise Edition') do
 			sh("mkdir", "-p", "#{@destdir}#{@prefix}/lib") &&
 			# Remove existing .so files so that the copy operation doesn't
@@ -209,13 +209,13 @@ private
 			sh("cp -Rpf .libs/libtcmalloc_minimal*.#{PlatformInfo::LIBEXT}* '#{@destdir}#{@prefix}/lib/'")
 		end
 	end
-	
+
 	def configure_ruby
 		return configure_autoconf_package('source', 'Ruby Enterprise Edition',
-			"--enable-mbari-api #{@extra_configure_args} " <<
+			"#{@extra_configure_args} " <<
 			"CFLAGS='-g -O2 #{ENV['CFLAGS']}'")
 	end
-	
+
 	def compile_system_allocator
 		if platform_uses_two_level_namespace_for_dynamic_libraries?
 			Dir.chdir("source") do
@@ -231,7 +231,7 @@ private
 			return true
 		end
 	end
-	
+
 	def compile_ruby
 		Dir.chdir("source") do
 			if fast_threading_patch_applied?
@@ -243,10 +243,10 @@ private
 					sh "patch -p1 < ../fast-threading.patch"
 				end
 			end
-			
+
 			# No idea why, but sometimes 'make' fails unless we do this.
 			sh("mkdir -p .ext/common")
-			
+
 			makefile = File.read('Makefile')
 			if makefile !~ /\$\(PRELIBS\)/
 				makefile.sub!(/^LIBS = (.*)$/, 'LIBS = $(PRELIBS) \1')
@@ -254,7 +254,7 @@ private
 					f.write(makefile)
 				end
 			end
-			
+
 			prelibs = "-Wl,"
 			if PlatformInfo.solaris_ld?
 				prelibs << "-R#{@prefix}/lib"
@@ -282,7 +282,7 @@ private
 			return sh("make PRELIBS='#{prelibs}'")
 		end
 	end
-	
+
 	def install_ruby
 		if install_autoconf_package('source', 'Ruby Enterprise Edition')
 			# Some installed files may have wrong permissions
@@ -301,7 +301,7 @@ private
 			return false
 		end
 	end
-	
+
 	def install_ree_specific_binaries
 		File.open("#{@destdir}#{@prefix}/bin/ree-version", 'w') do |f|
 			f.puts("#!/bin/sh")
@@ -309,7 +309,7 @@ private
 		end
 		system("chmod +x '#{@destdir}#{@prefix}/bin/ree-version'")
 	end
-	
+
 	def install_rubygems
 		# We might be installing into a fakeroot, so add the fakeroot's library
 		# search paths to RUBYLIB so that gem installation will work.
@@ -320,7 +320,7 @@ private
 		site_libdir = "#{basedir}/site_ruby/1.8"
 		site_extlibdir = "#{site_libdir}/#{archname}"
 		ENV['RUBYLIB'] = "#{libdir}:#{extlibdir}:#{site_libdir}:#{site_extlibdir}"
-		
+
 		Dir.chdir("rubygems") do
 			line
 			color_puts "<banner>Installing RubyGems...</banner>"
@@ -331,7 +331,7 @@ private
 		end
 		return true
 	end
-	
+
 	def install_iconv
 		# On some systems, most notably FreeBSD, the iconv extension isn't
 		# correctly installed. So here we do it manually.
@@ -345,7 +345,7 @@ private
 			else
 				args = []
 			end
-			
+
 			if !sh("#{@destdir}#{@prefix}/bin/ruby", "extconf.rb", *args) ||
 			   # 'make clean' must be run, because sometimes 'make'
 			   # thinks iconv.so is already compiled even though it
@@ -371,12 +371,12 @@ private
 		end
 		return true
 	end
-	
+
 	def install_useful_libraries
 		line
 		color_puts "<banner>Installing useful libraries...</banner>"
 		gem = "#{@destdir}#{@prefix}/bin/ruby #{@destdir}#{@prefix}/bin/gem"
-		
+
 		mysql_config = PlatformInfo.find_command('mysql_config')
 		if mysql_config
 			mysql_gem = "mysql -- --with-mysql-config='#{mysql_config}'"
@@ -390,7 +390,7 @@ private
 			              "rack", mysql_gem, "sqlite3-ruby", "pg"]
 		end
 		failed_gems = []
-		
+
 		if sh("#{gem} sources --update")
 			gem_names.each do |gem_name|
 				color_puts "\n<b>Installing #{gem_name}...</b>"
@@ -401,7 +401,7 @@ private
 		else
 			failed_gems = gem_names
 		end
-		
+
 		if !failed_gems.empty?
 			line
 			color_puts "<banner>Warning: some libraries could not be installed</banner>"
@@ -422,7 +422,7 @@ private
 			color_puts "<b>Press ENTER to show the next screen.</b>"
 			wait
 		end
-		
+
 		# Fix the shebang lines of scripts in 'bin' folder.
 		fix_shebang_lines("#{@destdir}#{@prefix}/bin", "#{@prefix}/bin/ruby")
 		Dir.chdir("#{@destdir}#{@prefix}/lib/ruby/gems/1.8/gems") do
@@ -433,7 +433,7 @@ private
 			end
 		end
 	end
-	
+
 	def show_finalization_screen
 		line
 		color_puts "<banner>Ruby Enterprise Edition is successfully installed!</banner>"
@@ -465,7 +465,7 @@ private
 	def color_puts(message)
 		puts substitute_color_tags(message)
 	end
-	
+
 	def color_print(message)
 		print substitute_color_tags(message)
 	end
@@ -478,16 +478,16 @@ private
 		data.gsub!(%r{<banner>(.*?)</banner>}m, "\e[33m\e[44m\e[1m\\1#{DEFAULT_TERMINAL_COLORS}")
 		return data
 	end
-	
+
 	def reset_terminal_colors
 		STDOUT.write("\e[0m")
 		STDOUT.flush
 	end
-	
+
 	def line
 		puts "--------------------------------------------"
 	end
-	
+
 	def wait
 		if !@auto_install_prefix
 			STDIN.readline
@@ -495,7 +495,7 @@ private
 	rescue Interrupt
 		exit 2
 	end
-	
+
 	def query_directory(default = "")
 		while true
 			STDOUT.write("[#{default}] : ")
@@ -514,7 +514,7 @@ private
 	rescue Interrupt, EOFError
 		exit 2
 	end
-	
+
 	def tcmalloc_supported?
 		return @use_tcmalloc &&
 		       RUBY_PLATFORM !~ /solaris/ &&
@@ -523,22 +523,22 @@ private
 		       # tcmalloc has issues on Snow Leopard, but works fine on Leopard.
 		       (RUBY_PLATFORM !~ /darwin/ || osx_kernel_major_release_version <= 9)
 	end
-	
+
 	def osx_kernel_major_release_version
 		release = `uname -r`.strip
 		release.gsub!(/\..*/, '')
 		return release.to_i
 	end
-	
+
 	def platform_uses_two_level_namespace_for_dynamic_libraries?
 		return RUBY_PLATFORM =~ /darwin/
 	end
-	
+
 	def sh(*command)
 		puts command.join(' ')
 		return system(*command)
 	end
-	
+
 	def configure_autoconf_package(dir, name, configure_options = nil)
 		line
 		color_puts "<banner>Compiling and optimizing #{name}</banner>"
@@ -557,7 +557,7 @@ private
 					system("touch -r / m4/*")
 				end
 			end
-			
+
 			if @prefix_changed || !File.exist?("Makefile")
 				if !sh("./configure --prefix=#{@prefix} #{configure_options}")
 					return false
@@ -569,7 +569,7 @@ private
 			return true
 		end
 	end
-	
+
 	def install_autoconf_package(dir, name)
 		Dir.chdir(dir) do
 			if block_given?
@@ -601,7 +601,7 @@ private
 			end
 		end
 	end
-	
+
 	# Fix the shebang lines of Ruby scripts.
 	def fix_shebang_lines(dir, new_shebang_line)
 		Dir.foreach(dir) do |basename|
@@ -632,7 +632,7 @@ private
 			end
 		end
 	end
-	
+
 	def fast_threading_patch_applied?
 		File.read("eval.c") =~ /PROT_EMPTY/
 	end
@@ -641,10 +641,10 @@ end
 options = { :tcmalloc => true, :install_dev_docs => true, :install_useful_gems => true, :extra_configure_args => [] }
 parser = OptionParser.new do |opts|
 	newline = "\n#{' ' * 37}"
-	
+
 	opts.banner = "Usage: installer [options]"
 	opts.separator("")
-	
+
 	opts.on("-a", "--auto PREFIX", String,
 	        "Configure Ruby with prefix PREFIX and#{newline}" <<
 	        "install it without any user interaction.") do |dir|

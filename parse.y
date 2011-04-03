@@ -77,6 +77,11 @@ NODE *ruby_eval_tree = 0;
 
 char *ruby_sourcefile;		/* current source file */
 int   ruby_sourceline;		/* current line no. */
+#ifdef GC_DEBUG
+ID ruby_sourcefunc;  /* current func if no other context */
+VALUE ruby_sourcefunc_line;  /* current func if no other context */
+char* ruby_sourcefunc_file;  /* current func if no other context */
+#endif
 
 static int yylex();
 static int yyerror();
@@ -2662,6 +2667,7 @@ yycompile(f, line)
     struct RVarmap *vp, *vars = ruby_dyna_vars;
 
     ruby_in_compile = 1;
+    ruby_in_longlife_context++;
     if (!compile_for_eval && rb_safe_level() == 0 &&
 	rb_const_defined(rb_cObject, rb_intern("SCRIPT_LINES__"))) {
 	VALUE hash, fname;
@@ -2693,6 +2699,7 @@ yycompile(f, line)
     ruby_debug_lines = 0;
     compile_for_eval = 0;
     ruby_in_compile = 0;
+    ruby_in_longlife_context--;
     cond_stack = 0;
     cmdarg_stack = 0;
     command_start = 1;
@@ -3197,7 +3204,7 @@ tokadd_string(func, term, paren, nest)
 }
 
 #define NEW_STRTERM(func, term, paren) \
-	NEW_NODE_EDEN(NODE_STRTERM, (func), (term) | ((paren) << (CHAR_BIT * 2)), 0)
+	NEW_NODE(NODE_STRTERM, (func), (term) | ((paren) << (CHAR_BIT * 2)), 0)
 
 static int
 parse_string(quote)
@@ -3303,7 +3310,7 @@ heredoc_identifier()
     tokfix();
     len = lex_p - lex_pbeg;
     lex_p = lex_pend;
-    lex_strterm = NEW_NODE_EDEN(NODE_HEREDOC,
+    lex_strterm = NEW_NODE(NODE_HEREDOC,
 				  rb_str_new(tok(), toklen()),	/* nd_lit */
 				  len,				/* nd_nth */
 				  lex_lastline);		/* nd_orig */
@@ -5960,15 +5967,6 @@ rb_gc_mark_parser()
 #elif defined yystacksize
     if (yyvsp) rb_gc_mark_locations((VALUE *)yyvs, (VALUE *)yyvsp);
 #endif
-
-    if (!ruby_in_compile) return;
-
-    rb_gc_mark_maybe((VALUE)yylval.node);
-    rb_gc_mark(ruby_debug_lines);
-    rb_gc_mark(lex_lastline);
-    rb_gc_mark(lex_input);
-    rb_gc_mark((VALUE)lex_strterm);
-    rb_gc_mark((VALUE)deferred_nodes);
 }
 
 void

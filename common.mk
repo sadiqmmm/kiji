@@ -18,7 +18,7 @@ RDOCOUT       = $(EXTOUT)/rdoc
 
 DMYEXT	      = dmyext.$(OBJEXT)
 MAINOBJ	      = main.$(OBJEXT)
-EXTOBJS	      = 
+EXTOBJS	      =
 DLDOBJS	      = $(DMYEXT)
 
 OBJS	      = array.$(OBJEXT) \
@@ -107,7 +107,7 @@ install-all: install-nodoc install-doc
 
 install-nodoc: pre-install-nodoc do-install-nodoc post-install-nodoc
 pre-install-nodoc:: pre-install-local pre-install-ext
-do-install-nodoc: 
+do-install-nodoc:
 	$(MINIRUBY) $(srcdir)/instruby.rb --make="$(MAKE)" $(INSTRUBY_ARGS) --mantype="$(MANTYPE)"
 post-install-nodoc:: post-install-local post-install-ext
 
@@ -181,7 +181,7 @@ no-install-all: no-install-nodoc
 what-where-nodoc: no-install-nodoc
 no-install-nodoc: pre-no-install-nodoc dont-install-nodoc post-no-install-nodoc
 pre-no-install-nodoc:: pre-no-install-local pre-no-install-ext
-dont-install-nodoc: 
+dont-install-nodoc:
 	$(MINIRUBY) $(srcdir)/instruby.rb -n --make="$(MAKE)" $(INSTRUBY_ARGS) --mantype="$(MANTYPE)"
 post-no-install-nodoc:: post-no-install-local post-no-install-ext
 
@@ -354,7 +354,7 @@ dl_os2.$(OBJEXT): {$(VPATH)}dl_os2.c
 ia64.$(OBJEXT): {$(VPATH)}ia64.s
 	$(CC) $(CFLAGS) -c $<
 
-# when I use -I., there is confliction at "OpenFile" 
+# when I use -I., there is confliction at "OpenFile"
 # so, set . into environment varible "include"
 win32.$(OBJEXT): {$(VPATH)}win32.c
 
@@ -400,7 +400,7 @@ gc.$(OBJEXT): {$(VPATH)}gc.c {$(VPATH)}ruby.h config.h \
   {$(VPATH)}rubysig.h {$(VPATH)}st.h {$(VPATH)}node.h \
   {$(VPATH)}env.h {$(VPATH)}re.h {$(VPATH)}regex.h \
   {$(VPATH)}pointerset.h {$(VPATH)}marktable.h \
-  {$(VPATH)}marktable.c {$(VPATH)}fastmarktable.c
+  {$(VPATH)}marktable.c
 hash.$(OBJEXT): {$(VPATH)}hash.c {$(VPATH)}ruby.h config.h \
   {$(VPATH)}defines.h {$(VPATH)}intern.h {$(VPATH)}missing.h \
   {$(VPATH)}st.h {$(VPATH)}util.h {$(VPATH)}rubysig.h

@@ -1,0 +1,16 @@
+TODO:
+- fix build chain to properly include system_allocator
+- see if removing taint improves performance
+- investigate other types to go on the longlife
+
+DONE:
+- change marktable incremental clear to just dump the table
+- fix mutating strings remembered set corruption
+- correct allocation points for objects during parse
+- put any frozen string on the longlife
+- use st_foreach_map for copy-compacter
+- correct source file for C func
+- indicate the C files as (native)
+- refactor the two source position functions into one
+- macro for rb_newobj
+- attempt to remove NODE_NEWLINE (doesn't work)

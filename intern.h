@@ -257,6 +257,7 @@ char *rb_source_filename _((const char*));
 void rb_gc_mark_locations _((VALUE*, VALUE*));
 void rb_mark_tbl _((struct st_table*));
 void add_table_to_remembered_set _((struct st_table*));
+void maybe_add_to_longlife_recent_allocations _((VALUE));
 void rb_mark_set _((struct st_table*));
 void rb_mark_hash _((struct st_table*));
 void rb_gc_mark_maybe _((VALUE));
@@ -269,15 +270,12 @@ void rb_gc_call_finalizer_at_exit _((void));
 VALUE rb_gc_enable _((void));
 VALUE rb_gc_disable _((void));
 VALUE rb_gc_start _((void));
+void rb_gc_unstress _((void));
 VALUE rb_gc_enable_stats _((void));
 VALUE rb_gc_disable_stats _((void));
 VALUE rb_gc_allocated_size _((void));
-unsigned long rb_os_live_objects _((void));
-#ifdef HAVE_LONG_LONG
-unsigned long long rb_os_allocated_objects _((void));
-#else
-unsigned long rb_os_allocated_objects _((void));
-#endif
+char* obj_type(int tp);
+char* node_type(int tp);
 /* hash.c */
 void st_foreach_safe _((struct st_table *, int (*)(ANYARGS), unsigned long));
 void rb_hash_foreach _((VALUE, int (*)(ANYARGS), VALUE));
@@ -326,6 +324,9 @@ VALUE rb_num2fix _((VALUE));
 VALUE rb_fix2str _((VALUE, int));
 VALUE rb_dbl_cmp _((double, double));
 /* object.c */
+#ifdef GC_DEBUG
+RUBY_EXTERN int longlife_moved_objs_count;
+#endif
 int rb_eql _((VALUE, VALUE));
 VALUE rb_any_to_s _((VALUE));
 VALUE rb_inspect _((VALUE));
@@ -333,12 +334,14 @@ VALUE rb_obj_is_instance_of _((VALUE, VALUE));
 VALUE rb_obj_is_kind_of _((VALUE, VALUE));
 VALUE rb_obj_alloc _((VALUE));
 VALUE rb_obj_clone _((VALUE));
+VALUE rb_obj_move _((VALUE));
 VALUE rb_obj_dup _((VALUE));
 VALUE rb_obj_init_copy _((VALUE,VALUE));
 VALUE rb_obj_taint _((VALUE));
 VALUE rb_obj_tainted _((VALUE));
 VALUE rb_obj_untaint _((VALUE));
 VALUE rb_obj_freeze _((VALUE));
+VALUE rb_obj_shallow_freeze _((VALUE));
 VALUE rb_obj_id _((VALUE));
 VALUE rb_obj_class _((VALUE));
 VALUE rb_class_real _((VALUE));
@@ -356,6 +359,13 @@ double rb_str_to_dbl _((VALUE, int));
 /* parse.y */
 RUBY_EXTERN int   ruby_sourceline;
 RUBY_EXTERN char *ruby_sourcefile;
+#ifdef GC_DEBUG
+RUBY_EXTERN ID ruby_sourcefunc;
+RUBY_EXTERN VALUE ruby_sourcefunc_line;
+RUBY_EXTERN char* ruby_sourcefunc_file;
+#endif
+RUBY_EXTERN int ruby_in_compile;
+RUBY_EXTERN int ruby_in_constant_assignment;
 int ruby_yyparse _((void));
 ID rb_id_attrset _((ID));
 void rb_parser_append_print _((void));
@@ -455,7 +465,7 @@ VALUE rb_str_plus _((VALUE, VALUE));
 VALUE rb_str_times _((VALUE, VALUE));
 VALUE rb_str_substr _((VALUE, long, long));
 void rb_str_modify _((VALUE));
-VALUE rb_str_freeze _((VALUE));
+VALUE rb_str_move _((VALUE));
 void rb_str_set_len _((VALUE, long));
 VALUE rb_str_resize _((VALUE, long));
 VALUE rb_str_cat _((VALUE, const char*, long));

@@ -22,12 +22,19 @@ extern struct FRAME {
     struct FRAME *prev;
     struct FRAME *tmp;
     struct RNode *node;
+#ifdef GC_DEBUG
+    source_position_t* source_pos;
+#endif
     int iter;
     int flags;
     unsigned long uniq;
 } *ruby_frame;
 
 void rb_gc_mark_frame _((struct FRAME *));
+
+#ifdef GC_DEBUG
+void gc_debug_get_frame_source_pos(struct FRAME* frame);
+#endif
 
 #define FRAME_DMETH  1
 #define FRAME_FUNC   2
