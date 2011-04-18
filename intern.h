@@ -274,8 +274,8 @@ void rb_gc_unstress _((void));
 VALUE rb_gc_enable_stats _((void));
 VALUE rb_gc_disable_stats _((void));
 VALUE rb_gc_allocated_size _((void));
-char* obj_type(int tp);
-char* node_type(int tp);
+char* gc_debug_obj_type(int tp);
+char* gc_debug_node_type(int tp);
 /* hash.c */
 void st_foreach_safe _((struct st_table *, int (*)(ANYARGS), unsigned long));
 void rb_hash_foreach _((VALUE, int (*)(ANYARGS), VALUE));
