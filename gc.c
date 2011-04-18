@@ -127,9 +127,6 @@ static const char lifetime_name_lower[][9] = { "longlife", "eden" };
 #define gc_debug_always_mark (0)
 #endif
 
-char* obj_type(int tp);
-char* node_type(int tp);
-
 #ifdef GC_DEBUG
 /*
  *  call-seq:
@@ -524,7 +521,7 @@ gc_debug_print_source_locations(source_position_t *source_pos, int *counts, FILE
             }
             fprintf(output_file, "%8d %-15s%s\n",
                 counts[i],
-                i < T_NODE ? obj_type(i) : node_type(i - T_NODE),
+                i < T_NODE ? gc_debug_obj_type(i) : gc_debug_node_type(i - T_NODE),
                 backtrace_str);
         }
     }
@@ -1801,7 +1798,7 @@ finalize_list(p)
 
 #define CONST_TO_NAME(x) case x: return #x;
 
-char* obj_type(int tp)
+char* gc_debug_obj_type(int tp)
 {
     switch (tp) {
         CONST_TO_NAME(T_NIL)
@@ -1834,7 +1831,7 @@ char* obj_type(int tp)
     }
 }
 
-char* node_type(int tp)
+char* gc_debug_node_type(int tp)
 {
     switch (tp) {
         CONST_TO_NAME(NODE_METHOD)
@@ -2199,7 +2196,7 @@ gc_sweep(heaps_space_t *heaps_space)
 
             for(i = 0; i < OBJ_TYPE_COUNT; i++) {
                 if (free_counts[i] > 0 || live_counts[i] > 0) {
-                    fprintf(gc_data_file, "    %-8s %8d %8d\n", obj_type(i), live_counts[i], free_counts[i]);
+                    fprintf(gc_data_file, "    %-8s %8d %8d\n", gc_debug_obj_type(i), live_counts[i], free_counts[i]);
                 }
             }
         }
