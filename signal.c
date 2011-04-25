@@ -17,6 +17,11 @@
 #include "node.h"
 #include <signal.h>
 #include <stdio.h>
+#include <ucontext.h>
+
+#ifdef HAVE_SYS_PARAM_H
+#include <sys/param.h>
+#endif
 
 #ifdef __BEOS__
 #undef SIGBUS
@@ -673,6 +678,15 @@ dump_machine_state(uc)
 	     uc->uc_mcontext->__ss.__eip, uc->uc_mcontext->__ss.__cs,
 	     uc->uc_mcontext->__ss.__ds, uc->uc_mcontext->__ss.__es,
 	     uc->uc_mcontext->__ss.__fs, uc->uc_mcontext->__ss.__gs);
+#elif defined(__x86_64__) && defined(BSD)
+  sig_printf(dump64, uc->uc_mcontext.mc_rax, uc->uc_mcontext.mc_rbx,
+	     uc->uc_mcontext.mc_rcx, uc->uc_mcontext.mc_rdx, uc->uc_mcontext.mc_rdi,
+	     uc->uc_mcontext.mc_rsi, uc->uc_mcontext.mc_rbp, uc->uc_mcontext.mc_rsp,
+	     uc->uc_mcontext.mc_r8, uc->uc_mcontext.mc_r9, uc->uc_mcontext.mc_r10,
+	     uc->uc_mcontext.mc_r11, uc->uc_mcontext.mc_r12, uc->uc_mcontext.mc_r13,
+	     uc->uc_mcontext.mc_r14, uc->uc_mcontext.mc_r15, uc->uc_mcontext.mc_rip,
+	     uc->uc_mcontext.mc_rflags, uc->uc_mcontext.mc_cs, uc->uc_mcontext.mc_fs,
+	     uc->uc_mcontext.mc_gs);
 #elif defined(__i386__)
   sig_printf(dump32, uc->uc_mcontext.gregs[REG_EAX], uc->uc_mcontext.gregs[REG_EBX],
 	     uc->uc_mcontext.gregs[REG_ECX], uc->uc_mcontext.gregs[REG_EDX],
