@@ -1,0 +1,130 @@
+What is Kiji
+============
+Kiji is a version of the Ruby Enterprise Edition runtime specifically
+improved for execution of large long-running programs, such as servers. The
+changes in Kiji are mostly concerned with MRI's garbage collection algorithm,
+which used to take a large portion of the execution time. MRI only uses one
+heap for all objects. Kiji uses two, named "eden" and "longlife". Longlife
+heap stores all AST nodes (parsed representations of the source code) as well
+as most constant strings. Longlife is collected much less frequently, allowing
+for CPU time savings.
+
+Environment variables
+=====================
+MRI's memory management could be configured using environment variables. Kiji
+preserves this approach, although the set of available variables is different.
+
+Memory sizing variables
+-----------------------
+
+* `RUBY_GC_HEAP_SIZE=number` is the size, in object slots, of each heap slab.
+  Kiji does away with increasing slab sizes, and heap is always allocated in
+  same increments. One heap object slot is 40 bytes in the current version.
+  Default value is 32768, or (calculating with a 40 byte slot) 1280KiB.
+* `RUBY_GC_EDEN_HEAPS=number` is the target size of the eden heap, in heap
+  slabs. The runtime starts up with a single allocated heap slab, and whenever
+  it fills up and is collected, adds a new one until it reaches the target
+  size. This gradual allocation lessens the memory fragmentation within the
+  heap slabs. Once it reached the target size, it will never shrink below it.
+  It will grow above it if it needs to, but those heap slabs allocated above
+  the target size will be released when they become vacant. Default value is
+  24, which, if used with default slab size, gives the target eden heap size
+  of 30MB.
+* `RUBY_GC_LONGLIFE_LAZINESS=0..1` is the "laziness" factor used to govern the
+  allocation strategy of the longlife heap slabs. It is a decimal value
+  between 0 and 1 denoting a ratio. After a longlife GC, if the proportion of
+  empty object slots to total object slots is higher than this setting, the
+  runtime will release vacant heap slabs. Also, if the proportion is higher
+  than this setting, then the runtime will allocate a new longlife heap slab.
+  Default value is 0.05, corresponding to 5%.
+
+GC debugging variables
+----------------------
+
+The following settings can be used to produce diagnostic output from the
+garbage collector:
+
+* `RUBY_GC_DEBUG=1` turns GC debug log output on.
+* `RUBY_GC_DATA_FILE=path/to/file` specifies the file where GC debug output is
+  written. Defaults to stderr.
+
+Advanced GC debugging variables
+-------------------------------
+
+There are some advanced GC debugging options too, but in order for them to
+work, you must build a debug version of the executable. To do that, pass the
+`--enable-gc-debug` flag to `./configure`. With such an executable, in
+conjunction with `RUBY_GC_DEBUG=1` you can use the following environment
+variables:
+
+* `RUBY_GC_DEBUG_SUMMARY=1` will print summary statistics about every GC
+  and a histograms of types of objects that remained alive and were freed in
+  the GC log.
+* `RUBY_GC_DEBUG_DUMP=1` will write files with detailed allocation
+  information: what objects and how many of them were allocated at a
+  particular location in the program (with full backtrace - locations invoked
+  through different paths are distinguished). The files are overwritten after
+  each GC cycle. By default, the files are: 
+  * `/tmp/rb_gc_debug_objects.eden.freed.txt`, 
+  * `/tmp/rb_gc_debug_objects.eden.live.txt`,
+  * `/tmp/rb_gc_debug_objects.longlife.freed.txt`, and
+  * `/tmp/rb_gc_debug_objects.longlife.live.txt`.
+* `RUBY_GC_DUMP_FILE_PATTERN=c-printf-pattern` specifies a C printf()
+  compliant pattern for naming the allocation tracing files. By default, it is
+  `/tmp/rb_gc_debug_objects.%s.%s.txt`.
+
+The output of `RUBY_GC_DEBUG_DUMP` is fairly verbose, but you can easily
+post-process it. We ourselves use the following UNIX command line pipe to
+summarize the traces, sort them, and take the top few entries:
+
+    cat /tmp/rb_gc_debug_objects.eden.live.txt |
+    awk 'BEGIN {} { sums[$2," ", $3, " ", $4, " ", $5, " ", $6, " ", $7, " ", $8] += $1 } END { for (i in sums) { print sums[i], i } }' |
+    sort -rni |
+    head -n 30 |
+    ruby -e "STDIN.readlines.each {|l| puts l.split}"
+
+GC stressing variables
+----------------------
+
+Finally, there are some variables that force the GC into a very
+non-economical, highly-stressing behavior. We used them internally to diagnose
+bugs within the memory management (or, alternatively, to reasonably assure
+ourselves there are none). You probably will not use them, but they're still
+there in the unlikely case you need them (i.e. to reproduce a bug).
+These variables also only work in an `--enable-gc-debug` build, but they do
+not need `RUBY_GC_DEBUG=1`, as they do not produce diagnostic output.
+
+* `RUBY_GC_DEBUG_LONGLIFE_DISABLE=1` turns off longlife heap, effectively
+  reestablishing the MRI's single heap. Useful to measure the performance
+  difference between having and not having a longlife heap, as well as for
+  ruling out that some undesired behavior is due to using longlife heap.
+* `RUBY_GC_DEBUG_STRESS=1` runs full GC (both longlife and eden) after each
+  allocation. Extremely heavy.
+* `RUBY_GC_DEBUG_ALWAYS_MARK=1` marking the eden is allowed to follow edges
+  into the longlife heap (ordinarily, it stops there). Very obscure and
+  unlikely to ever be needed by anyone.
+
+New APIs
+========
+
+Kiji exposes few new APIs:
+
+* `ObjectSpace.allocated_objects` is the number of objects allocated since the
+  Ruby VM started up - it only increases.
+
+Objects have the following two new properties:
+
+* `Object.moved?` is true if an object is on the longlife heap, or if its
+  members (if it is a hash or array) are strings that have been moved to the
+  longlife heap.
+* `Object.longlived?` is true if the object is on the longlife heap.
+
+Executables built with `--enable-gc-debug` expose the following APIs:
+
+* `GC.exorcise` cleans ghost references from the call stack. Call stack is not
+  by default wiped when methods return, causing some objects pointed to from
+  it to be retained longer than they should.
+* `GC.stress` returns whether full GCs run after every allocation
+* `GC.stress=` sets whether full GCs run after every allocation. Its default
+  value comes from the `RUBY_GC_DEBUG_STRESS` variable.
+* `GC.log(msg)` writes a message to the GC log  file.
