@@ -2786,7 +2786,6 @@ Init_Object()
     rb_define_method(rb_mKernel, "class", rb_obj_class, 0);
 
     rb_define_method(rb_mKernel, "clone", rb_obj_clone, 0);
-    rb_define_method(rb_mKernel, "clone_string_values", rb_obj_clone, 0);
     rb_define_method(rb_mKernel, "dup", rb_obj_dup, 0);
     rb_define_method(rb_mKernel, "initialize_copy", rb_obj_init_copy, 1);
 
