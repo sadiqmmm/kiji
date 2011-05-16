@@ -117,15 +117,6 @@ rb_obj_id_obsolete(obj)
     return rb_obj_id(obj);
 }
 
-#ifdef GC_DEBUG
-VALUE
-rb_obj_ptr(obj)
-    VALUE obj;
-{
-    return LONG2FIX(obj);
-}
-#endif
-
 VALUE
 rb_class_real(cl)
     VALUE cl;
@@ -2954,10 +2945,6 @@ Init_Object()
     rb_undef_alloc_func(rb_cFalseClass);
     rb_undef_method(CLASS_OF(rb_cFalseClass), "new");
     rb_define_global_const("FALSE", Qfalse);
-
-#ifdef GC_DEBUG
-    rb_define_method(rb_mKernel, "__ptr__", rb_obj_ptr, 0);
-#endif
 
     id_eq = rb_intern("==");
     id_eql = rb_intern("eql?");
