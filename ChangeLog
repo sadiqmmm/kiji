@@ -1,3 +1,24 @@
+Mon May 16 00:00:00 2011, Kiji 0.11
+
+        * Longlife heap optimizations; only newly allocated longlived objects
+          are scanned for additions to remembered set.
+
+        * Heap allocation strategy now governed by RUBY_GC_HEAP_SIZE,
+          RUBY_GC_EDEN_HEAPS, and RUBY_GC_LONGLIFE_LAZINESS environment
+          variables.
+
+        * Added memory summary and object allocation tracing to GC_DEBUG
+          builds, governed by RUBY_GC_DEBUG_SUMMARY, RUBY_GC_DEBUG_DUMP, and
+          RUBY_GC_DUMP_FILE_PATTERN environment variables.
+
+	* Exposed ObjectSpace.allocated_objects.
+
+	* Exposed Object.moved? and Object.longlived? APIs.
+
+Fri Mar  4 00:00:00 2011, Kiji 0.9
+
+        * Introduced longlife heap
+
 Fri Feb  5 23:09:01 2010  Akinori MUSHA  <knu@iDaemons.org>
 
 	* ext/rational/rational.c: Added to provide a fast implementation
