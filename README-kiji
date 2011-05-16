@@ -9,6 +9,20 @@ heap stores all AST nodes (parsed representations of the source code) as well
 as most constant strings. Longlife is collected much less frequently, allowing
 for CPU time savings.
 
+Build instructions
+==================
+The build instructions provided in Ruby's master README file are perfectly
+appropriate for Kiji as well. However, at Twitter we're actually linking it
+with [Google's tcmalloc library](http://code.google.com/p/google-perftools/).
+After you install Google Perftools, you can produce the same binary as we
+use at Twitter with these commands for configuration:
+
+    export CFLAGS='-O2 -g -Wall -fPIC -fno-builtin-malloc \
+        -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free \
+        -fno-stack-protector'
+    export LIBS='-ltcmalloc_minimal'
+    ./configure --disable-pthread --disable-shared --disable-ucontext
+
 Environment variables
 =====================
 MRI's memory management could be configured using environment variables. Kiji
