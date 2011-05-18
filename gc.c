@@ -2129,7 +2129,7 @@ gc_sweep(heaps_space_t *heaps_space)
 #endif
             if (gc_debug_stress ||
                 /* Shrink longlife if it's too lazy */
-                (lt == lifetime_longlife && (total_free_slots > heaps_space->heap_slots_total * longlife_laziness)) ||
+                (lt == lifetime_longlife && (total_free_slots > (heaps_space->heap_slots_total - heap->limit) * longlife_laziness)) ||
                 /* Shrink eden if there is a freeable heap and we are over our target size */
                 (lt == lifetime_eden && (heaps_space->num_heaps > eden_heaps))) {
                 GC_DEBUG_PRINTF("  %s heap freed (size %d)\n", heaps_space_name, heap->limit)
