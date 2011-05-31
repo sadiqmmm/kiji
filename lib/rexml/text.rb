@@ -165,7 +165,7 @@ module REXML
     #   u = Text.new( "sean russell", false, nil, true )
     #   u.value   #-> "sean russell"
     def value
-      @unnormalized if @unnormalized
+      return @unnormalized if @unnormalized
       doctype = nil
       if @parent
         doc = @parent.document
