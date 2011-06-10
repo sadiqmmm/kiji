@@ -252,7 +252,7 @@ rb_obj_freeze(VALUE obj)
             break;
         }
     }
-    if (!OBJ_FROZEN(obj)) {
+    if (!OBJ_FROZEN(obj) && TYPE(obj) != T_CLASS && TYPE(obj) != T_MODULE) {
         if (rb_safe_level() >= 4 && !OBJ_TAINTED(obj)) {
             rb_raise(rb_eSecurityError, "Insecure: can't freeze object");
         }
