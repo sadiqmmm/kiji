@@ -15,6 +15,10 @@ Mon May 16 00:00:00 2011, Kiji 0.11
 
 	* Exposed Object.moved? and Object.longlived? APIs.
 
+	* Added support for BSD-style register naming conventions on
+	  ucontext_t structures on x86_64 architecture, thereby allowing
+	  signal handling to work properly on BSD/x86_64 platform.
+
 Fri Mar  4 00:00:00 2011, Kiji 0.9
 
         * Introduced longlife heap
