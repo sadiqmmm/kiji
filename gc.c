@@ -2146,13 +2146,16 @@ gc_sweep(heaps_space_t *heaps_space)
         }
     }
 
-    if ((lt == lifetime_longlife &&
+    for (i = 0;
+        i < 4 &&
+        ((lt == lifetime_longlife &&
             /* Expand longlife if it's not lazy enough */
             (total_free_slots < heaps_space->heap_slots_total * longlife_laziness)) ||
         (lt == lifetime_eden &&
-            /* Add one eden heap at a time (to reduce initial fragmentation) until we reach
+            /* Add four eden heaps at a time (to reduce initial fragmentation) until we reach
                 the target size */
-            (heaps_space->num_heaps < eden_heaps))) {
+            (heaps_space->num_heaps < eden_heaps)));
+        i++) {
           new_heap_size = add_heap(heaps_space);
           GC_DEBUG_PRINTF("  %s heap added (size %d)\n", heaps_space_name, new_heap_size)
 #ifdef GC_DEBUG
