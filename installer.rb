@@ -20,7 +20,7 @@ class Installer
     Dependencies::Readline_Dev,
     Dependencies::Autoconf,
     Dependencies::Bison,
-    Dependencies::Gperf
+    Dependencies::GPerf
   ]
 
   def start(options = {})
