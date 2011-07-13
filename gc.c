@@ -2996,8 +2996,8 @@ rb_gc_preemptive_start()
 {
     if (GC_DEBUG_ON) {
         fprintf(gc_data_file, "*** Preemptive check ***\n");
-        fprintf(gc_data_file, "  Eden slots:        %8u\n", eden_heaps_space.total_slots);
-        fprintf(gc_data_file, "  Free eden slots:   %8u\n", eden_heaps_space.total_free_slots);
+        fprintf(gc_data_file, "  Eden slots:            %8u\n", eden_heaps_space.total_slots);
+        fprintf(gc_data_file, "  Free eden slots:       %8u\n", eden_heaps_space.total_free_slots);
         fprintf(gc_data_file, "  Required free slots:   %8u\n", eden_preemptive_total_free_slots);
     }
     if (eden_heaps_space.total_free_slots < eden_preemptive_total_free_slots) {
