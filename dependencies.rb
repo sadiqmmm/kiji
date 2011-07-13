@@ -301,7 +301,7 @@ module Dependencies # :nodoc: all
   GPerf = Dependency.new do |dep|
     dep.name = "GPerf"
     dep.define_checker do |result|
-      if !%x(which gperf).blank?
+      if !%x(which gperf).empty?
         result.found
       else
         result.not_found
