@@ -261,7 +261,7 @@ module Dependencies # :nodoc: all
   Autoconf = Dependency.new do |dep|
     dep.name = "Autoconf"
     dep.define_checker do |result|
-      if !%x(which autoconf).blank?
+      if !%x(which autoconf).empty?
         result.found
       else
         result.not_found
