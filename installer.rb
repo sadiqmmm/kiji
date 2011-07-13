@@ -371,10 +371,10 @@ private
 
   def install_dev_docs
     Dir.chdir("source") do
-      color_puts "<banner>Installing developer documentation...</banner>"
-      if !system("make install-doc DESTDIR='#{@destdir}'")
-        return false
-      end
+      color_puts "<banner>NOT Installing developer documentation...</banner>"
+      # if !system("make install-doc DESTDIR='#{@destdir}'")
+      #   return false
+      # end
     end
     return true
   end
