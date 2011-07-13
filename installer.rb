@@ -17,7 +17,9 @@ class Installer
     Dependencies::Patch,
     Dependencies::Zlib_Dev,
     Dependencies::OpenSSL_Dev,
-    Dependencies::Readline_Dev
+    Dependencies::Readline_Dev,
+    Dependencies::Autoconf,
+    Dependencies::Bison
   ]
 
   def start(options = {})
@@ -236,7 +238,7 @@ private
   def compile_ruby
     Dir.chdir("source") do
       if fast_threading_patch_applied?
-        p "Something is wrong.  Fast-threading patch should not be applied."
+        p "Fast-threading patch is already sapplied."
         # if !@fast_threading
         #   sh "patch -p1 -R < ../fast-threading.patch"
         # end
@@ -550,6 +552,10 @@ private
         if File.directory?("m4")
           system("touch -r / m4/*")
         end
+      end
+
+      if !File.exist?("configure")
+        sh("autoconf")
       end
 
       if @prefix_changed || !File.exist?("Makefile")
