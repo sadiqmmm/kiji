@@ -298,6 +298,26 @@ module Dependencies # :nodoc: all
     dep.website = "http://www.gnu.org/software/bison/"
   end
 
+  GPerf = Dependency.new do |dep|
+    dep.name = "GPerf"
+    dep.define_checker do |result|
+      if !%x(which gperf).blank?
+        result.found
+      else
+        result.not_found
+      end
+    end
+    if RUBY_PLATFORM =~ /linux/
+      case LINUX_DISTRO
+      when :ubuntu, :debian
+        dep.install_command = "apt-get install gperf"
+      when :rhel, :fedora, :centos
+        dep.install_command = "yum install gperf"
+      end
+    end
+    dep.website = "http://www.gnu.org/s/gperf/"
+  end
+
 end
 
 end # module RubyEnterpriseEdition

@@ -19,7 +19,8 @@ class Installer
     Dependencies::OpenSSL_Dev,
     Dependencies::Readline_Dev,
     Dependencies::Autoconf,
-    Dependencies::Bison
+    Dependencies::Bison,
+    Dependencies::Gperf
   ]
 
   def start(options = {})
