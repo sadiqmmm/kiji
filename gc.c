@@ -699,6 +699,8 @@ static int heaps_used   = 0;
     small, and you have too many heaps and get stack errors. */
 static int heap_size = 32768;
 static int eden_heaps = 24;
+static int eden_preemptive_heaps = 4;
+static int eden_preemptive_total_free_slots;
 
 typedef struct heaps_space {
     int num_heaps;
@@ -783,6 +785,9 @@ static void set_gc_parameters()
 
     SET_INT_ENV_VAR("RUBY_GC_HEAP_SIZE", heap_size)
     SET_INT_ENV_VAR("RUBY_GC_EDEN_HEAPS", eden_heaps)
+    SET_INT_ENV_VAR("RUBY_GC_PREEMPTIVE_HEAPS", eden_preemptive_heaps)
+
+    eden_preemptive_total_free_slots = eden_preemptive_heaps * heap_size;
 
     WITH_FLOAT_ENV_VAR("RUBY_GC_LONGLIFE_LAZINESS", longlife_laziness)
         if (val >= 1) {
@@ -2986,10 +2991,22 @@ rb_gc()
     rb_gc_finalize_deferred();
 }
 
-void
-rb_gc_preemptively()
+VALUE
+rb_gc_preemptive_start()
 {
-    garbage_collect("preemptive collection request");
+    if (GC_DEBUG_ON) {
+        fprintf(gc_data_file, "*** Preemptive check ***\n");
+        fprintf(gc_data_file, "  Eden slots:        %8u\n", eden_heaps_space.total_slots);
+        fprintf(gc_data_file, "  Free eden slots:   %8u\n", eden_heaps_space.total_free_slots);
+        fprintf(gc_data_file, "  Required free slots:   %8u\n", eden_preemptive_total_free_slots);
+    }
+    if (eden_heaps_space.total_free_slots < eden_preemptive_total_free_slots) {
+        garbage_collect("preemptive collection request");
+        return Qtrue;
+    } else {
+        GC_DEBUG_PRINT("  Collection skipped\n");
+        return Qfalse;
+    }
 }
 
 /*
@@ -3683,6 +3700,7 @@ Init_GC()
 
     rb_mGC = rb_define_module("GC");
     rb_define_singleton_method(rb_mGC, "start", rb_gc_start, 0);
+    rb_define_singleton_method(rb_mGC, "preemptive_start", rb_gc_preemptive_start, 0);
     rb_define_singleton_method(rb_mGC, "enable", rb_gc_enable, 0);
     rb_define_singleton_method(rb_mGC, "disable", rb_gc_disable, 0);
     rb_define_method(rb_mGC, "garbage_collect", rb_gc_start, 0);
