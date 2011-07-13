@@ -698,6 +698,8 @@ static int heaps_used   = 0;
 /* Too large a heap size and you can never free a page, due to fragmentation. Too
     small, and you have too many heaps and get stack errors. */
 static int heap_size = 32768;
+static int heap_increase_rate = 4;
+
 static int eden_heaps = 24;
 static int eden_preemptive_heaps = 4;
 static int eden_preemptive_total_free_slots;
@@ -784,8 +786,9 @@ static void set_gc_parameters()
 #endif
 
     SET_INT_ENV_VAR("RUBY_GC_HEAP_SIZE", heap_size)
+    SET_INT_ENV_VAR("RUBY_GC_HEAP_INCREASE_RATE", heap_increase_rate)
     SET_INT_ENV_VAR("RUBY_GC_EDEN_HEAPS", eden_heaps)
-    SET_INT_ENV_VAR("RUBY_GC_PREEMPTIVE_HEAPS", eden_preemptive_heaps)
+    SET_INT_ENV_VAR("RUBY_GC_EDEN_PREEMPTIVE_HEAPS", eden_preemptive_heaps)
 
     eden_preemptive_total_free_slots = eden_preemptive_heaps * heap_size;
 
@@ -2163,7 +2166,7 @@ gc_sweep(heaps_space_t *heaps_space)
     }
 
     for (i = 0;
-        i < 4 &&
+        i < heap_increase_rate &&
         ((lt == lifetime_longlife &&
             /* Expand longlife if it's not lazy enough */
             (total_free_slots < heaps_space->total_slots * longlife_laziness)) ||
