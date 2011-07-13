@@ -1771,25 +1771,25 @@ static int obj_free _((VALUE));
 static void add_to_correct_freelist(RVALUE *p)
 {
     int longlived = OBJ_LONGLIVED(p);
-    heaps_space_t heaps_space;
+    heaps_space_t *heaps_space;
 
     // Has explicit longlife flag
     if(longlived) {
-        heaps_space = longlife_heaps_space;
+        heaps_space = &longlife_heaps_space;
     }
     // Has some flags (so they weren't cleared), but not longlife
     else if(p->as.free.flags != 0 && !longlived) {
-        heaps_space = eden_heaps_space;
+        heaps_space = &eden_heaps_space;
     }
     // If all else fails, use slower is_pointer_to_longlife_heap()
     else if (is_pointer_to_longlife_heap(p)) {
-        heaps_space = longlife_heaps_space;
+        heaps_space = &longlife_heaps_space;
     } else {
-        heaps_space = eden_heaps_space;
+        heaps_space = &eden_heaps_space;
     }
 
-    push_freelist(&heaps_space, p);
-    heaps_space.total_free_slots++;
+    push_freelist(heaps_space, p);
+    heaps_space->total_free_slots++;
 }
 
 static void
