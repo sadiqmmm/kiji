@@ -698,11 +698,16 @@ static int heaps_used   = 0;
 /* Too large a heap size and you can never free a page, due to fragmentation. Too
     small, and you have too many heaps and get stack errors. */
 static int heap_size = 32768;
+static int heap_increase_rate = 4;
+
 static int eden_heaps = 24;
+static int eden_preemptive_heaps = 4;
+static int eden_preemptive_total_free_slots;
 
 typedef struct heaps_space {
-    int heap_slots_total;
     int num_heaps;
+    unsigned int total_slots;
+    unsigned int total_free_slots;
     enum lifetime lifetime;
     RVALUE *freelist;
 } heaps_space_t;
@@ -781,7 +786,11 @@ static void set_gc_parameters()
 #endif
 
     SET_INT_ENV_VAR("RUBY_GC_HEAP_SIZE", heap_size)
+    SET_INT_ENV_VAR("RUBY_GC_HEAP_INCREASE_RATE", heap_increase_rate)
     SET_INT_ENV_VAR("RUBY_GC_EDEN_HEAPS", eden_heaps)
+    SET_INT_ENV_VAR("RUBY_GC_EDEN_PREEMPTIVE_HEAPS", eden_preemptive_heaps)
+
+    eden_preemptive_total_free_slots = eden_preemptive_heaps * heap_size;
 
     WITH_FLOAT_ENV_VAR("RUBY_GC_LONGLIFE_LAZINESS", longlife_laziness)
         if (val >= 1) {
@@ -895,7 +904,8 @@ add_heap(heaps_space_t *heaps_space)
     if (himem < pend) {
       himem = pend;
     }
-    heaps_space->heap_slots_total += new_heap_size;
+    heaps_space->total_slots += new_heap_size;
+    heaps_space->total_free_slots += new_heap_size;
     heaps_space->num_heaps++;
     heaps_used++;
 
@@ -921,6 +931,7 @@ pop_freelist(heaps_space_t* heaps_space)
 {
     VALUE obj = (VALUE)heaps_space->freelist;
     heaps_space->freelist = heaps_space->freelist->as.free.next;
+    heaps_space->total_free_slots--;
     RANY(obj)->as.free.next = 0;
 #ifdef GC_DEBUG
     MEMZERO((void*)obj, RVALUE, 1);
@@ -1762,19 +1773,25 @@ static int obj_free _((VALUE));
 
 static void add_to_correct_freelist(RVALUE *p)
 {
-    int longlived = OBJ_LONGLIVED(p);
+    heaps_space_t *heaps_space;
+
     // Has explicit longlife flag
-    if(longlived) {
-        push_freelist(&longlife_heaps_space, p);
+    if(OBJ_LONGLIVED(p)) {
+        heaps_space = &longlife_heaps_space;
     }
     // Has some flags (so they weren't cleared), but not longlife
-    else if(p->as.free.flags != 0 && !longlived) {
-        push_freelist(&eden_heaps_space, p);
+    else if(p->as.free.flags != 0) {
+        heaps_space = &eden_heaps_space;
     }
     // If all else fails, use slower is_pointer_to_longlife_heap()
-    else {
-        push_freelist(is_pointer_to_longlife_heap(p) ? &longlife_heaps_space : &eden_heaps_space, p);
+    else if (is_pointer_to_longlife_heap(p)) {
+        heaps_space = &longlife_heaps_space;
+    } else {
+        heaps_space = &eden_heaps_space;
     }
+
+    push_freelist(heaps_space, p);
+    heaps_space->total_free_slots++;
 }
 
 static void
@@ -2129,13 +2146,14 @@ gc_sweep(heaps_space_t *heaps_space)
 #endif
             if (gc_debug_stress ||
                 /* Shrink longlife if it's too lazy */
-                (lt == lifetime_longlife && (total_free_slots > (heaps_space->heap_slots_total - heap->limit) * longlife_laziness)) ||
+                (lt == lifetime_longlife && (total_free_slots > (heaps_space->total_slots - heap->limit) * longlife_laziness)) ||
                 /* Shrink eden if there is a freeable heap and we are over our target size */
                 (lt == lifetime_eden && (heaps_space->num_heaps > eden_heaps))) {
                 GC_DEBUG_PRINTF("  %s heap freed (size %d)\n", heaps_space_name, heap->limit)
                 RVALUE *pp;
-                heaps_space->heap_slots_total -= heap->limit;
+                heaps_space->total_slots -= heap->limit;
                 heaps_space->num_heaps--;
+                total_free_slots -= heap->limit;
                 heap->limit = 0;
                 heap->slotlimit = heap->slot;
                 for (pp = final_list; pp != final; pp = pp->as.free.next) {
@@ -2146,18 +2164,19 @@ gc_sweep(heaps_space_t *heaps_space)
         }
     }
 
-    if ((lt == lifetime_longlife &&
+    for (i = 0;
+        i < heap_increase_rate &&
+        ((lt == lifetime_longlife &&
             /* Expand longlife if it's not lazy enough */
-            (total_free_slots < heaps_space->heap_slots_total * longlife_laziness)) ||
+            (total_free_slots < heaps_space->total_slots * longlife_laziness)) ||
         (lt == lifetime_eden &&
-            /* Add one eden heap at a time (to reduce initial fragmentation) until we reach
+            /* Add four eden heaps at a time (to reduce initial fragmentation) until we reach
                 the target size */
-            (heaps_space->num_heaps < eden_heaps))) {
+            (heaps_space->num_heaps < eden_heaps)));
+        i++) {
           new_heap_size = add_heap(heaps_space);
           GC_DEBUG_PRINTF("  %s heap added (size %d)\n", heaps_space_name, new_heap_size)
-#ifdef GC_DEBUG
           total_free_slots += new_heap_size;
-#endif
     }
 
     if (lt == lifetime_longlife) {
@@ -2181,11 +2200,14 @@ gc_sweep(heaps_space_t *heaps_space)
         free_unused_heaps();
     }
 
+    /* reset free slot count; we do it in bulk to avoid a cache penalty on every decrement */
+    heaps_space->total_free_slots = total_free_slots;
+
 #ifdef GC_DEBUG
     if (GC_DEBUG_ON) {
         fprintf(gc_data_file, "  %s heaps in heapspace:   %8d\n", heaps_space_name, heaps_space->num_heaps);
         fprintf(gc_data_file, "  %s empty heaps:          %8d\n", heaps_space_name, empty_heaps);
-        fprintf(gc_data_file, "  %s total slots:          %8lu\n", heaps_space_name, total_live_slots + total_free_slots);
+        fprintf(gc_data_file, "  %s total slots:          %8u\n", heaps_space_name, heaps_space->total_slots);
         fprintf(gc_data_file, "  %s already free slots:   %8lu\n", heaps_space_name, total_already_freed_slots);
         fprintf(gc_data_file, "  %s finalized free slots: %8lu\n", heaps_space_name, total_finalized_slots);
         fprintf(gc_data_file, "  %s live objects:         %8lu\n", heaps_space_name, total_live_slots);
@@ -2792,7 +2814,7 @@ garbage_collect_0(VALUE *top_frame)
 
     /*** Schedule optional longlife GC based on allocation rate ***/
 
-    if (longlife_recent_allocations > longlife_heaps_space.heap_slots_total * longlife_laziness) {
+    if (longlife_recent_allocations > longlife_heaps_space.total_slots * longlife_laziness) {
         longlife_collection = Qtrue;
     }
 
@@ -2974,6 +2996,24 @@ rb_gc()
     rb_gc_finalize_deferred();
 }
 
+VALUE
+rb_gc_preemptive_start()
+{
+    if (GC_DEBUG_ON) {
+        fprintf(gc_data_file, "*** Preemptive check ***\n");
+        fprintf(gc_data_file, "  Eden slots:            %8u\n", eden_heaps_space.total_slots);
+        fprintf(gc_data_file, "  Free eden slots:       %8u\n", eden_heaps_space.total_free_slots);
+        fprintf(gc_data_file, "  Required free slots:   %8u\n", eden_preemptive_total_free_slots);
+    }
+    if (eden_heaps_space.total_free_slots < eden_preemptive_total_free_slots) {
+        garbage_collect("preemptive collection request");
+        return Qtrue;
+    } else {
+        GC_DEBUG_PRINT("  Collection skipped\n");
+        return Qfalse;
+    }
+}
+
 /*
  *  call-seq:
  *     GC.start                     => nil
@@ -3132,7 +3172,8 @@ void ruby_init_stack(VALUE *addr
 
 static void init_heaps_space(heaps_space_t* heaps_space, enum lifetime lifetime)
 {
-    heaps_space->heap_slots_total = 0;
+    heaps_space->total_slots = 0;
+    heaps_space->total_free_slots = 0;
     heaps_space->lifetime = lifetime;
 }
 /*
@@ -3664,6 +3705,7 @@ Init_GC()
 
     rb_mGC = rb_define_module("GC");
     rb_define_singleton_method(rb_mGC, "start", rb_gc_start, 0);
+    rb_define_singleton_method(rb_mGC, "preemptive_start", rb_gc_preemptive_start, 0);
     rb_define_singleton_method(rb_mGC, "enable", rb_gc_enable, 0);
     rb_define_singleton_method(rb_mGC, "disable", rb_gc_disable, 0);
     rb_define_method(rb_mGC, "garbage_collect", rb_gc_start, 0);
