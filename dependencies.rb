@@ -281,7 +281,7 @@ module Dependencies # :nodoc: all
   Bison = Dependency.new do |dep|
     dep.name = "Bison"
     dep.define_checker do |result|
-      if !%x(which bison).blank?
+      if !%x(which bison).empty?
         result.found
       else
         result.not_found
